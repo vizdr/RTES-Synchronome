@@ -1,0 +1,457 @@
+vladimir@raspberrypi:~/MyProjects/Coursera/RTS/Std-Project-Starter-Code/sequencer_generic $ sudo ./seqv4l2
+FORCING FORMAT
+init_mmap req.count=6
+Device supports 6 mmap buffers
+mappped buffer 0
+mappped buffer 1
+mappped buffer 2
+mappped buffer 3
+mappped buffer 4
+mappped buffer 5
+will capture to 6 buffers
+allocated buffer 0
+allocated buffer 1
+allocated buffer 2
+allocated buffer 3
+allocated buffer 4
+allocated buffer 5
+at 17622.085974
+--Acquisitation read frame at: 0.000699
+Starting High Rate Sequencer Demo
+START High Rate Sequencer @ sec=0.000000241 with resolution 0.000000001
+System has 4 processors configured and 4 available.
+Using CPUS=4 from total available.
+Pthread Policy is SCHED_FIFO
+PTHREAD SCOPE SYSTEM
+rt_max_prio=99
+rt_min_prio=1
+Sequencer (main) thread running on CPU=1 from 225 available CPUs
+Service threads will run on 1 CPU cores
+Service threads will run on 1 CPU cores
+Service threads will run on 1 CPU cores
+pthread_create successful for service 1
+Frame acquisitation thread running on CPU=2 
+S1 thread @ sec=0.000700037
+pthread_create successful for service 2
+Frame processing thread running on CPU=2 
+S2 thread @ sec=0.000860333
+pthread_create successful for service 3
+Frame storage thread running on CPU=2 
+S3 thread @ sec=0.000997963
+pthread_create successful for service 4
+Start sequencer
+at 17622.288043
+--Acquisitation read frame at: 0.000809
+S4 thread @ sec=0.400279055
+at 17622.488258
+--Acquisitation read frame at: 0.001012
+at 17622.688852
+--Acquisitation read frame at: 0.001550
+at 17622.888168
+--Acquisitation read frame at: 0.000930
+at 17623.088555
+--Acquisitation read frame at: 0.001302
+processing rb.tail=1, rb.head=0, rb.count=6
+
+No processing because no frames have been read yet.
+rb.tail=1, rb.head=0, rb.count=1 at 17623.088555
+
+No saving because no frames have been read yet.
+at 17623.088555
+at 17623.287713
+--Acquisitation read frame at: 0.000466
+at 17623.487538
+--Acquisitation read frame at: 0.000314
+at 17623.687870
+--Acquisitation read frame at: 0.000561
+at 17623.887668
+--Acquisitation read frame at: 0.000424
+at 17624.087696
+--Acquisitation read frame at: 0.000455
+processing rb.tail=1, rb.head=0, rb.count=6
+
+No processing because no frames have been read yet.
+rb.tail=1, rb.head=0, rb.count=1 at 17624.087696
+
+No saving because no frames have been read yet.
+at 17624.087696
+at 17624.287793
+--Acquisitation read frame at: 0.000518
+at 17624.487518
+--Acquisitation read frame at: 0.000326
+at 17624.687740
+--Acquisitation read frame at: 0.000506
+at 17624.887660
+--Acquisitation read frame at: 0.000419
+at 17625.087669
+--Acquisitation read frame at: 0.000432
+processing rb.tail=1, rb.head=0, rb.count=6
+
+No processing because no frames have been read yet.
+rb.tail=1, rb.head=0, rb.count=1 at 17625.087669
+
+No saving because no frames have been read yet.
+at 17625.087669
+at 17625.287640
+--Acquisitation read frame at: 0.000380
+at 17625.487522
+--Acquisitation read frame at: 0.000298
+at 17625.687783
+--Acquisitation read frame at: 0.000524
+at 17625.887755
+--Acquisitation read frame at: 0.000506
+at 17626.087683
+--Acquisitation read frame at: 0.000436
+processing rb.tail=1, rb.head=0, rb.count=6
+
+No processing because no frames have been read yet.
+rb.tail=1, rb.head=0, rb.count=1 at 17626.087683
+
+No saving because no frames have been read yet.
+at 17626.087683
+at 17626.287916
+--Acquisitation read frame at: 0.000636
+at 17626.487661
+--Acquisitation read frame at: 0.000442
+at 17626.687557
+--Acquisitation read frame at: 0.000338
+at 17626.887976
+--Acquisitation read frame at: 0.000673
+at 17627.087643
+--Acquisitation read frame at: 0.000407
+processing rb.tail=1, rb.head=0, rb.count=6
+
+No processing because no frames have been read yet.
+rb.tail=1, rb.head=0, rb.count=1 at 17627.087643
+
+No saving because no frames have been read yet.
+at 17627.087643
+at 17627.287736
+--Acquisitation read frame at: 0.000484
+at 17627.487677
+--Acquisitation read frame at: 0.000445
+at 17627.687573
+--Acquisitation read frame at: 0.000375
+at 17627.887636
+--Acquisitation read frame at: 0.000399
+Frame at tail of ring buffer 4 is not the same as previous frame, marked.
+ Selection: read_framecnt=0, rb.tail=0, rb.head=0, rb.count=5 at 0.002900 and 0.000000 FPS.
+Acquisitation: read_framecnt=1, rb.tail=1, rb.head=0, rb.count=6 at 0.200411 and 4.989757 FPS.
+--Acquisitation read frame at: 0.000425
+Frame at tail of ring buffer 0 is not the same as previous frame, marked.
+ Selection: read_framecnt=1, rb.tail=1, rb.head=0, rb.count=6 at 0.003026 and 4.912289 FPS.
+processing rb.tail=1, rb.head=0, rb.count=6
+process frame 1: 
+rb.tail=1, rb.head=0, rb.count=1  processed at 0.214644, @ 4.658867 FPS
+---Processing time for this frame: 0.010945
+save frame 1: 
+Frame written to flash at 0.217267, 921600, bytes
+Dump YUYV converted to RGB size 614400
+save_framecnt=1  saved at 0.217342, @ 4.601043 FPS
+---Saving time for this frame: 0.002534
+Acquisitation: read_framecnt=2, rb.tail=2, rb.head=0, rb.count=2 at 0.400337 and 4.995788 FPS.
+--Acquisitation read frame at: 0.000368
+Frame at tail of ring buffer 1 is not the same as previous frame, marked.
+ Selection: read_framecnt=2, rb.tail=2, rb.head=0, rb.count=2 at 0.002872 and 4.958654 FPS.
+Acquisitation: read_framecnt=3, rb.tail=3, rb.head=0, rb.count=3 at 0.600419 and 4.996509 FPS.
+--Acquisitation read frame at: 0.000421
+Frame at tail of ring buffer 2 is not the same as previous frame, marked.
+ Selection: read_framecnt=3, rb.tail=3, rb.head=0, rb.count=3 at 0.002861 and 4.971851 FPS.
+Acquisitation: read_framecnt=4, rb.tail=4, rb.head=0, rb.count=4 at 0.800521 and 4.996749 FPS.
+--Acquisitation read frame at: 0.000502
+Frame at tail of ring buffer 3 is not the same as previous frame, marked.
+ Selection: read_framecnt=4, rb.tail=4, rb.head=0, rb.count=4 at 0.002865 and 4.978013 FPS.
+Acquisitation: read_framecnt=5, rb.tail=0, rb.head=0, rb.count=5 at 1.000433 and 4.997834 FPS.
+--Acquisitation read frame at: 0.000449
+Frame at tail of ring buffer 4 is not the same as previous frame, marked.
+ Selection: read_framecnt=5, rb.tail=0, rb.head=0, rb.count=5 at 0.002875 and 4.982853 FPS.
+Acquisitation: read_framecnt=6, rb.tail=1, rb.head=0, rb.count=6 at 1.200325 and 4.998645 FPS.
+--Acquisitation read frame at: 0.000350
+Frame at tail of ring buffer 0 is not the same as previous frame, marked.
+ Selection: read_framecnt=6, rb.tail=1, rb.head=0, rb.count=6 at 0.002831 and 4.986438 FPS.
+processing rb.tail=1, rb.head=0, rb.count=6
+process frame 2: 
+rb.tail=1, rb.head=0, rb.count=1  processed at 1.212902, @ 1.648937 FPS
+---Processing time for this frame: 0.009507
+save frame 2: 
+Frame written to flash at 1.215754, 921600, bytes
+Dump YUYV converted to RGB size 614400
+save_framecnt=2  saved at 1.215914, @ 1.644852 FPS
+---Saving time for this frame: 0.002891
+Acquisitation: read_framecnt=7, rb.tail=2, rb.head=0, rb.count=2 at 1.400377 and 4.998655 FPS.
+--Acquisitation read frame at: 0.000391
+Frame at tail of ring buffer 1 is not the same as previous frame, marked.
+ Selection: read_framecnt=7, rb.tail=2, rb.head=0, rb.count=2 at 0.002868 and 4.987878 FPS.
+Acquisitation: read_framecnt=8, rb.tail=3, rb.head=0, rb.count=3 at 1.600421 and 4.998684 FPS.
+--Acquisitation read frame at: 0.000428
+Frame at tail of ring buffer 2 is not the same as previous frame, marked.
+ Selection: read_framecnt=8, rb.tail=3, rb.head=0, rb.count=3 at 0.002891 and 4.989180 FPS.
+Acquisitation: read_framecnt=9, rb.tail=4, rb.head=0, rb.count=4 at 1.800476 and 4.998679 FPS.
+--Acquisitation read frame at: 0.000501
+Frame at tail of ring buffer 3 is not the same as previous frame, marked.
+ Selection: read_framecnt=9, rb.tail=4, rb.head=0, rb.count=4 at 0.002850 and 4.990435 FPS.
+Acquisitation: read_framecnt=10, rb.tail=0, rb.head=0, rb.count=5 at 2.000439 and 4.998903 FPS.
+--Acquisitation read frame at: 0.000450
+Frame at tail of ring buffer 4 is not the same as previous frame, marked.
+ Selection: read_framecnt=10, rb.tail=0, rb.head=0, rb.count=5 at 0.002881 and 4.991418 FPS.
+Acquisitation: read_framecnt=11, rb.tail=1, rb.head=0, rb.count=6 at 2.200673 and 4.998471 FPS.
+--Acquisitation read frame at: 0.000652
+Frame at tail of ring buffer 0 is not the same as previous frame, marked.
+ Selection: read_framecnt=11, rb.tail=1, rb.head=0, rb.count=6 at 0.002777 and 4.991512 FPS.
+processing rb.tail=1, rb.head=0, rb.count=6
+process frame 3: 
+rb.tail=1, rb.head=0, rb.count=1  processed at 2.213362, @ 1.355404 FPS
+---Processing time for this frame: 0.009531
+save frame 3: 
+Frame written to flash at 2.219082, 921600, bytes
+Dump YUYV converted to RGB size 614400
+save_framecnt=3  saved at 2.219146, @ 1.351871 FPS
+---Saving time for this frame: 0.005682
+Acquisitation: read_framecnt=12, rb.tail=2, rb.head=0, rb.count=2 at 2.400440 and 4.999083 FPS.
+--Acquisitation read frame at: 0.000437
+Frame at tail of ring buffer 1 is not the same as previous frame, marked.
+ Selection: read_framecnt=12, rb.tail=2, rb.head=0, rb.count=2 at 0.002862 and 4.992775 FPS.
+Acquisitation: read_framecnt=13, rb.tail=3, rb.head=0, rb.count=3 at 2.600313 and 4.999399 FPS.
+--Acquisitation read frame at: 0.000339
+Frame at tail of ring buffer 2 is not the same as previous frame, marked.
+ Selection: read_framecnt=13, rb.tail=3, rb.head=0, rb.count=3 at 0.002883 and 4.993642 FPS.
+Acquisitation: read_framecnt=14, rb.tail=4, rb.head=0, rb.count=4 at 2.800487 and 4.999131 FPS.
+--Acquisitation read frame at: 0.000487
+Frame at tail of ring buffer 3 is not the same as previous frame, marked.
+ Selection: read_framecnt=14, rb.tail=4, rb.head=0, rb.count=4 at 0.002963 and 4.993550 FPS.
+Acquisitation: read_framecnt=15, rb.tail=0, rb.head=0, rb.count=5 at 3.000706 and 4.998823 FPS.
+--Acquisitation read frame at: 0.000692
+Frame at tail of ring buffer 4 is not the same as previous frame, marked.
+ Selection: read_framecnt=15, rb.tail=0, rb.head=0, rb.count=5 at 0.002824 and 4.993820 FPS.
+Acquisitation: read_framecnt=16, rb.tail=1, rb.head=0, rb.count=6 at 3.201171 and 4.998172 FPS.
+--Acquisitation read frame at: 0.001055
+Frame at tail of ring buffer 0 is not the same as previous frame, marked.
+ Selection: read_framecnt=16, rb.tail=1, rb.head=0, rb.count=6 at 0.002806 and 4.993564 FPS.
+processing rb.tail=1, rb.head=0, rb.count=6
+process frame 4: 
+rb.tail=1, rb.head=0, rb.count=1  processed at 3.213989, @ 1.244559 FPS
+---Processing time for this frame: 0.009534
+save frame 4: 
+Frame written to flash at 3.216705, 921600, bytes
+Dump YUYV converted to RGB size 614400
+save_framecnt=4  saved at 3.216826, @ 1.243462 FPS
+---Saving time for this frame: 0.002519
+Acquisitation: read_framecnt=17, rb.tail=2, rb.head=0, rb.count=2 at 3.400252 and 4.999629 FPS.
+--Acquisitation read frame at: 0.000313
+Frame at tail of ring buffer 1 is not the same as previous frame, marked.
+ Selection: read_framecnt=17, rb.tail=2, rb.head=0, rb.count=2 at 0.002869 and 4.995246 FPS.
+Acquisitation: read_framecnt=18, rb.tail=3, rb.head=0, rb.count=3 at 3.600254 and 4.999647 FPS.
+--Acquisitation read frame at: 0.000302
+Frame at tail of ring buffer 2 is not the same as previous frame, marked.
+ Selection: read_framecnt=18, rb.tail=3, rb.head=0, rb.count=3 at 0.002879 and 4.995491 FPS.
+Acquisitation: read_framecnt=19, rb.tail=4, rb.head=0, rb.count=4 at 3.800519 and 4.999317 FPS.
+--Acquisitation read frame at: 0.000523
+Frame at tail of ring buffer 3 is not the same as previous frame, marked.
+ Selection: read_framecnt=19, rb.tail=4, rb.head=0, rb.count=4 at 0.002918 and 4.995289 FPS.
+Acquisitation: read_framecnt=20, rb.tail=0, rb.head=0, rb.count=5 at 4.000459 and 4.999427 FPS.
+--Acquisitation read frame at: 0.000445
+Frame at tail of ring buffer 4 is not the same as previous frame, marked.
+ Selection: read_framecnt=20, rb.tail=0, rb.head=0, rb.count=5 at 0.002862 and 4.995676 FPS.
+Acquisitation: read_framecnt=21, rb.tail=1, rb.head=0, rb.count=6 at 4.200727 and 4.999134 FPS.
+--Acquisitation read frame at: 0.000622
+Frame at tail of ring buffer 0 is not the same as previous frame, marked.
+ Selection: read_framecnt=21, rb.tail=1, rb.head=0, rb.count=6 at 0.002814 and 4.995560 FPS.
+processing rb.tail=1, rb.head=0, rb.count=6
+process frame 5: 
+rb.tail=1, rb.head=0, rb.count=1  processed at 4.213429, @ 1.186682 FPS
+---Processing time for this frame: 0.009556
+save frame 5: 
+Frame written to flash at 4.215960, 921600, bytes
+Dump YUYV converted to RGB size 614400
+save_framecnt=5  saved at 4.216023, @ 1.185952 FPS
+---Saving time for this frame: 0.002413
+Acquisitation: read_framecnt=22, rb.tail=2, rb.head=0, rb.count=2 at 4.400523 and 4.999405 FPS.
+--Acquisitation read frame at: 0.000503
+Frame at tail of ring buffer 1 is not the same as previous frame, marked.
+ Selection: read_framecnt=22, rb.tail=2, rb.head=0, rb.count=2 at 0.002908 and 4.995909 FPS.
+Acquisitation: read_framecnt=23, rb.tail=3, rb.head=0, rb.count=3 at 4.600429 and 4.999533 FPS.
+--Acquisitation read frame at: 0.000429
+Frame at tail of ring buffer 2 is not the same as previous frame, marked.
+ Selection: read_framecnt=23, rb.tail=3, rb.head=0, rb.count=3 at 0.002904 and 4.996229 FPS.
+Acquisitation: read_framecnt=24, rb.tail=4, rb.head=0, rb.count=4 at 4.800527 and 4.999451 FPS.
+--Acquisitation read frame at: 0.000530
+Frame at tail of ring buffer 3 is not the same as previous frame, marked.
+ Selection: read_framecnt=24, rb.tail=4, rb.head=0, rb.count=4 at 0.002888 and 4.996290 FPS.
+Acquisitation: read_framecnt=25, rb.tail=0, rb.head=0, rb.count=5 at 5.000517 and 4.999483 FPS.
+--Acquisitation read frame at: 0.000467
+Frame at tail of ring buffer 4 is not the same as previous frame, marked.
+ Selection: read_framecnt=25, rb.tail=0, rb.head=0, rb.count=5 at 0.002872 and 4.996442 FPS.
+Acquisitation: read_framecnt=26, rb.tail=1, rb.head=0, rb.count=6 at 5.200598 and 4.999425 FPS.
+--Acquisitation read frame at: 0.000539
+Frame at tail of ring buffer 0 is not the same as previous frame, marked.
+ Selection: read_framecnt=26, rb.tail=1, rb.head=0, rb.count=6 at 0.002779 and 4.996551 FPS.
+processing rb.tail=1, rb.head=0, rb.count=6
+process frame 6: 
+rb.tail=1, rb.head=0, rb.count=1  processed at 5.213210, @ 1.150922 FPS
+---Processing time for this frame: 0.009533
+save frame 6: 
+Frame written to flash at 5.215891, 921600, bytes
+Dump YUYV converted to RGB size 614400
+save_framecnt=6  saved at 5.215949, @ 1.150318 FPS
+---Saving time for this frame: 0.002495
+Acquisitation: read_framecnt=27, rb.tail=2, rb.head=0, rb.count=2 at 5.400486 and 4.999550 FPS.
+--Acquisitation read frame at: 0.000486
+Frame at tail of ring buffer 1 is not the same as previous frame, marked.
+ Selection: read_framecnt=27, rb.tail=2, rb.head=0, rb.count=2 at 0.002867 and 4.996764 FPS.
+Acquisitation: read_framecnt=28, rb.tail=3, rb.head=0, rb.count=3 at 5.600547 and 4.999511 FPS.
+--Acquisitation read frame at: 0.000522
+Frame at tail of ring buffer 2 is not the same as previous frame, marked.
+ Selection: read_framecnt=28, rb.tail=3, rb.head=0, rb.count=3 at 0.002864 and 4.996826 FPS.
+Acquisitation: read_framecnt=29, rb.tail=4, rb.head=0, rb.count=4 at 5.800482 and 4.999584 FPS.
+--Acquisitation read frame at: 0.000472
+Frame at tail of ring buffer 3 is not the same as previous frame, marked.
+ Selection: read_framecnt=29, rb.tail=4, rb.head=0, rb.count=4 at 0.002851 and 4.997024 FPS.
+Acquisitation: read_framecnt=30, rb.tail=0, rb.head=0, rb.count=5 at 6.000497 and 4.999586 FPS.
+--Acquisitation read frame at: 0.000491
+Frame at tail of ring buffer 4 is not the same as previous frame, marked.
+ Selection: read_framecnt=30, rb.tail=0, rb.head=0, rb.count=5 at 0.002903 and 4.997067 FPS.
+Acquisitation: read_framecnt=31, rb.tail=1, rb.head=0, rb.count=6 at 6.200431 and 4.999653 FPS.
+--Acquisitation read frame at: 0.000416
+Frame at tail of ring buffer 0 is not the same as previous frame, marked.
+ Selection: read_framecnt=31, rb.tail=1, rb.head=0, rb.count=6 at 0.002809 and 4.997266 FPS.
+processing rb.tail=1, rb.head=0, rb.count=6
+process frame 7: 
+rb.tail=1, rb.head=0, rb.count=1  processed at 6.212977, @ 1.126674 FPS
+---Processing time for this frame: 0.009492
+save frame 7: 
+Frame written to flash at 6.214827, 921600, bytes
+Dump YUYV converted to RGB size 614400
+save_framecnt=7  saved at 6.214880, @ 1.126329 FPS
+---Saving time for this frame: 0.001786
+Acquisitation: read_framecnt=32, rb.tail=2, rb.head=0, rb.count=2 at 6.400308 and 4.999759 FPS.
+--Acquisitation read frame at: 0.000357
+Frame at tail of ring buffer 1 is not the same as previous frame, marked.
+ Selection: read_framecnt=32, rb.tail=2, rb.head=0, rb.count=2 at 0.002879 and 4.997412 FPS.
+Acquisitation: read_framecnt=33, rb.tail=3, rb.head=0, rb.count=3 at 6.600248 and 4.999812 FPS.
+--Acquisitation read frame at: 0.000309
+Frame at tail of ring buffer 2 is not the same as previous frame, marked.
+ Selection: read_framecnt=33, rb.tail=3, rb.head=0, rb.count=3 at 0.002865 and 4.997558 FPS.
+Acquisitation: read_framecnt=34, rb.tail=4, rb.head=0, rb.count=4 at 6.800502 and 4.999631 FPS.
+--Acquisitation read frame at: 0.000517
+Frame at tail of ring buffer 3 is not the same as previous frame, marked.
+ Selection: read_framecnt=34, rb.tail=4, rb.head=0, rb.count=4 at 0.002884 and 4.997401 FPS.
+Acquisitation: read_framecnt=35, rb.tail=0, rb.head=0, rb.count=5 at 7.000453 and 4.999676 FPS.
+--Acquisitation read frame at: 0.000462
+Frame at tail of ring buffer 4 is not the same as previous frame, marked.
+ Selection: read_framecnt=35, rb.tail=0, rb.head=0, rb.count=5 at 0.002902 and 4.997512 FPS.
+Acquisitation: read_framecnt=36, rb.tail=1, rb.head=0, rb.count=6 at 7.200916 and 4.999364 FPS.
+--Acquisitation read frame at: 0.000717
+Frame at tail of ring buffer 0 is not the same as previous frame, marked.
+ Selection: read_framecnt=36, rb.tail=1, rb.head=0, rb.count=6 at 0.002803 and 4.997271 FPS.
+processing rb.tail=1, rb.head=0, rb.count=6
+process frame 8: 
+rb.tail=1, rb.head=0, rb.count=1  processed at 7.213596, @ 1.109017 FPS
+---Processing time for this frame: 0.009545
+save frame 8: 
+Frame written to flash at 7.227568, 921600, bytes
+Dump YUYV converted to RGB size 614400
+save_framecnt=8  saved at 7.227653, @ 1.106860 FPS
+---Saving time for this frame: 0.013883
+Acquisitation: read_framecnt=37, rb.tail=2, rb.head=0, rb.count=2 at 7.400458 and 4.999691 FPS.
+--Acquisitation read frame at: 0.000472
+Frame at tail of ring buffer 1 is not the same as previous frame, marked.
+ Selection: read_framecnt=37, rb.tail=2, rb.head=0, rb.count=2 at 0.002868 and 4.997671 FPS.
+Acquisitation: read_framecnt=38, rb.tail=3, rb.head=0, rb.count=3 at 7.600490 and 4.999678 FPS.
+--Acquisitation read frame at: 0.000489
+Frame at tail of ring buffer 2 is not the same as previous frame, marked.
+ Selection: read_framecnt=38, rb.tail=3, rb.head=0, rb.count=3 at 0.002845 and 4.997727 FPS.
+Acquisitation: read_framecnt=39, rb.tail=4, rb.head=0, rb.count=4 at 7.800467 and 4.999701 FPS.
+--Acquisitation read frame at: 0.000467
+Frame at tail of ring buffer 3 is not the same as previous frame, marked.
+ Selection: read_framecnt=39, rb.tail=4, rb.head=0, rb.count=4 at 0.002884 and 4.997755 FPS.
+Acquisitation: read_framecnt=40, rb.tail=0, rb.head=0, rb.count=5 at 8.000434 and 4.999729 FPS.
+--Acquisitation read frame at: 0.000444
+Frame at tail of ring buffer 4 is not the same as previous frame, marked.
+ Selection: read_framecnt=40, rb.tail=0, rb.head=0, rb.count=5 at 0.002891 and 4.997833 FPS.
+Acquisitation: read_framecnt=41, rb.tail=1, rb.head=0, rb.count=6 at 8.201209 and 4.999263 FPS.
+--Acquisitation read frame at: 0.001143
+Frame at tail of ring buffer 0 is not the same as previous frame, marked.
+ Selection: read_framecnt=41, rb.tail=1, rb.head=0, rb.count=6 at 0.002790 and 4.997404 FPS.
+processing rb.tail=1, rb.head=0, rb.count=6
+process frame 9: 
+rb.tail=1, rb.head=0, rb.count=1  processed at 8.213916, @ 1.095702 FPS
+---Processing time for this frame: 0.009570
+save frame 9: 
+Frame written to flash at 8.217211, 921600, bytes
+Dump YUYV converted to RGB size 614400
+save_framecnt=9  saved at 8.217272, @ 1.095254 FPS
+---Saving time for this frame: 0.003057
+Acquisitation: read_framecnt=42, rb.tail=2, rb.head=0, rb.count=2 at 8.400540 and 4.999678 FPS.
+--Acquisitation read frame at: 0.000542
+Frame at tail of ring buffer 1 is not the same as previous frame, marked.
+ Selection: read_framecnt=42, rb.tail=2, rb.head=0, rb.count=2 at 0.002885 and 4.997885 FPS.
+Acquisitation: read_framecnt=43, rb.tail=3, rb.head=0, rb.count=3 at 8.600655 and 4.999619 FPS.
+--Acquisitation read frame at: 0.000645
+Frame at tail of ring buffer 2 is not the same as previous frame, marked.
+ Selection: read_framecnt=43, rb.tail=3, rb.head=0, rb.count=3 at 0.002843 and 4.997829 FPS.
+Acquisitation: read_framecnt=44, rb.tail=4, rb.head=0, rb.count=4 at 8.800661 and 4.999624 FPS.
+--Acquisitation read frame at: 0.000614
+Frame at tail of ring buffer 3 is not the same as previous frame, marked.
+ Selection: read_framecnt=44, rb.tail=4, rb.head=0, rb.count=4 at 0.002869 and 4.997863 FPS.
+Acquisitation: read_framecnt=45, rb.tail=0, rb.head=0, rb.count=5 at 9.000847 and 4.999529 FPS.
+--Acquisitation read frame at: 0.000731
+Frame at tail of ring buffer 4 is not the same as previous frame, marked.
+ Selection: read_framecnt=45, rb.tail=0, rb.head=0, rb.count=5 at 0.002842 and 4.997867 FPS.
+Acquisitation: read_framecnt=46, rb.tail=1, rb.head=0, rb.count=6 at 9.200473 and 4.999743 FPS.
+--Acquisitation read frame at: 0.000433
+Frame at tail of ring buffer 0 is not the same as previous frame, marked.
+ Selection: read_framecnt=46, rb.tail=1, rb.head=0, rb.count=6 at 0.002830 and 4.998127 FPS.
+processing rb.tail=1, rb.head=0, rb.count=6
+process frame 10: 
+rb.tail=1, rb.head=0, rb.count=1  processed at 9.213067, @ 1.085415 FPS
+---Processing time for this frame: 0.009496
+save frame 10: 
+Frame written to flash at 9.215370, 921600, bytes
+Dump YUYV converted to RGB size 614400
+save_framecnt=10  saved at 9.215426, @ 1.085137 FPS
+---Saving time for this frame: 0.002236
+Disabling sequencer interval timer with abort=1 and 1501
+joined thread 0
+joined thread 1
+joined thread 2
+capture stopped
+Total capture time=9.220690, for 46 frames, 4.988781 FPS
+
+
+TEST COMPLETE
+vladimir@raspberrypi:~/MyProjects/Coursera/RTS/Std-Project-Starter-Code/sequencer_generic $ v4l2-ctl --device=/dev/video --info 
+Cannot open device /dev/video, exiting.
+vladimir@raspberrypi:~/MyProjects/Coursera/RTS/Std-Project-Starter-Code/sequencer_generic $ v4l2-ctl --device=/dev/video0 --info 
+Driver Info:
+	Driver name      : uvcvideo
+	Card type        : AVerMedia PW310 Webcam: AVerMed
+	Bus info         : usb-0000:01:00.0-1.1
+	Driver version   : 6.18.29
+	Capabilities     : 0x84a00001
+		Video Capture
+		Metadata Capture
+		Streaming
+		Extended Pix Format
+		Device Capabilities
+	Device Caps      : 0x04200001
+		Video Capture
+		Streaming
+		Extended Pix Format
+Media Driver Info:
+	Driver name      : uvcvideo
+	Model            : AVerMedia PW310 Webcam: AVerMed
+	Serial           : 200901010001
+	Bus info         : usb-0000:01:00.0-1.1
+	Media version    : 6.18.29
+	Hardware revision: 0x00005801 (22529)
+	Driver version   : 6.18.29
+Interface Info:
+	ID               : 0x03000002
+	Type             : V4L Video
+Entity Info:
+	ID               : 0x00000001 (1)
+	Name             : AVerMedia PW310 Webcam: AVerMed
+	Function         : V4L2 I/O
+	Flags            : default
+	Pad 0x01000007   : 0: Sink
+	  Link 0x02000010: from remote pad 0x100000a of entity 'Extension 4' (Video Pixel Formatter): Data, Enabled, Immutable
