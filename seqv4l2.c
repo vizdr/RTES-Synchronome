@@ -31,7 +31,7 @@
 #include <sys/time.h>
 #include <sys/sysinfo.h>
 #include <errno.h>
-
+#include <sys/mman.h>    // for mlockall
 #include <signal.h>
 
 #define USEC_PER_MSEC (1000)
@@ -44,11 +44,7 @@
 #define SEQ_CORE (1)
 #define RT_CORE (2)
 
-#if VIEWER_ENABLE
-#define NUM_THREADS (4)
-#else
-#define NUM_THREADS (3)
-#endif
+ #define NUM_THREADS (4)
 
 // Of the available user space clocks, CLOCK_MONONTONIC_RAW is typically most precise and not subject to
 // updates from external timer adjustments
@@ -79,8 +75,8 @@
 #endif
 
 int abortTest = FALSE;
-int abortS1 = FALSE, abortS2 = FALSE, abortS3 = FALSE;
-sem_t semS1, semS2, semS3;
+int abortS1 = FALSE, abortS2 = FALSE, abortS3 = FALSE, abortS5 = FALSE;
+sem_t semS1, semS2, semS3, semS5;
 #if VIEWER_ENABLE
 int   abortS4 = FALSE;
 sem_t semS4;
@@ -104,6 +100,8 @@ void Sequencer(int id);
 void *Service_1_frame_acquisition(void *threadp);
 void *Service_2_frame_process(void *threadp);
 void *Service_3_frame_storage(void *threadp);
+void *Service_5_frame_filter(void *threadp);
+
 #if VIEWER_ENABLE
 void *Service_4_frame_display(void *threadp);
 int   seq_frame_get_for_display(unsigned char *curr_rgb,
@@ -117,6 +115,7 @@ int   seq_frame_get_for_display(unsigned char *curr_rgb,
 int seq_frame_read(void);
 int seq_frame_process(void);
 int seq_frame_store(void);
+int seq_frame_filter(void);
 
 double getTimeMsec(void);
 double realtime(struct timespec *tsptr);
@@ -144,6 +143,11 @@ void main(void)
     pthread_attr_t rt_sched_attr[NUM_THREADS];
     int rt_max_prio, rt_min_prio, cpuidx;
 
+    #if VIEWER_ENABLE
+    pthread_t viewer_thread;
+    threadParams_t threadParams_viewer;
+    #endif
+
     struct sched_param rt_param[NUM_THREADS];
     struct sched_param main_param;
 
@@ -151,6 +155,10 @@ void main(void)
     pid_t mainpid;
 
     v4l2_frame_acquisition_initialization(dev_name);
+
+    // lock memory to prevent paging in this demo application which is not handling page faults in real-time safe manner
+      if (mlockall(MCL_CURRENT | MCL_FUTURE) != 0)
+        perror("mlockall");
 
     // required to get camera initialized and ready
     seq_frame_read();
@@ -198,7 +206,11 @@ void main(void)
         exit(-1);
     }
 #endif
-
+    if (sem_init(&semS5, 0, 0))
+    {
+        printf("Failed to initialize S5 semaphore\n");
+        exit(-1);
+    }
     mainpid = getpid();
 
     rt_max_prio = sched_get_priority_max(SCHED_FIFO);
@@ -228,7 +240,7 @@ void main(void)
     sched_setaffinity(getpid(), sizeof(cpu_set_t), &seqcpu);
     printf("Sequencer (main) thread running on CPU=%d from %d available CPUs\n", sched_getcpu(), CPU_COUNT(&threadcpu));
 
-    for (i = 0; i < NUM_THREADS; i++)
+    for (i = 0; i < (NUM_THREADS); i++)
     {
 
         // run ALL threads on core RT_CORE
@@ -305,9 +317,12 @@ void main(void)
         pthread_attr_setschedparam(&viewer_attr, &viewer_param);
         pthread_attr_setaffinity_np(&viewer_attr, sizeof(cpu_set_t), &viewercpu);
 
-        threadParams[3].threadIdx = 3;
-        rc = pthread_create(&threads[3], &viewer_attr,
-                            Service_4_frame_display, (void *)&(threadParams[3]));
+        #ifdef VIEWER_ENABLE
+        threadParams_viewer.threadIdx = (sizeof(threadParams) / sizeof(threadParams[0])) + 1; /* index after last RT service thread */
+        #endif
+
+        rc = pthread_create(&viewer_thread, &viewer_attr,
+                            Service_4_frame_display, (void *)&(threadParams_viewer));
         if (rc < 0)
             perror("pthread_create for service 4 - frame display");
         else
@@ -316,6 +331,17 @@ void main(void)
         pthread_attr_destroy(&viewer_attr);
     }
 #endif
+
+    // Service_5 = RT_MAX-3	@ 1 Hz
+    //
+    rt_param[3].sched_priority = rt_max_prio - 4;
+    pthread_attr_setschedparam(&rt_sched_attr[3], &rt_param[3]);
+    rc = pthread_create(&threads[3], &rt_sched_attr[3], Service_5_frame_filter, (void *)&(threadParams[3]));
+    if (rc < 0)
+        perror("pthread_create for service 5 - flash frame storage");
+    else
+        printf("pthread_create successful for service 5\n");
+
 
     // Wait for service threads to initialize and await relese by sequencer.
     //
@@ -353,13 +379,19 @@ void main(void)
 
     timer_settime(timer_1, flags, &itime, &last_itime);
 
-    for (i = 0; i < NUM_THREADS; i++)
+    for (i = 0; i < (NUM_THREADS); i++)
     {
-        if (rc = pthread_join(threads[i], NULL) < 0)
+        if ((rc = pthread_join(threads[i], NULL)) < 0)
             perror("main pthread_join");
         else
             printf("joined thread %d\n", i);
     }
+
+#if VIEWER_ENABLE
+    if ((rc = pthread_join(viewer_thread, NULL)) < 0)
+        perror("main pthread_join for viewer thread");
+    else        printf("joined viewer thread\n");
+#endif 
 
     v4l2_frame_acquisition_shutdown();
 
@@ -387,12 +419,14 @@ void Sequencer(int id)
         abortS1 = TRUE;
         abortS2 = TRUE;
         abortS3 = TRUE;
+        abortS5 = TRUE;
 #if VIEWER_ENABLE
         abortS4 = TRUE;
 #endif
         sem_post(&semS1);
         sem_post(&semS2);
         sem_post(&semS3);
+        sem_post(&semS5);
 #if VIEWER_ENABLE
         sem_post(&semS4);
 #endif
@@ -425,6 +459,10 @@ void Sequencer(int id)
     // wakes on VIEWER_CORE the ring buffer slot it reads is already complete.
     if ((seqCnt % 20) == 0) sem_post(&semS4);
 #endif
+
+    // Service_5 @ 1 Hz
+    if ((seqCnt % 100) == 0)
+        sem_post(&semS5);
 }
 
 void *Service_1_frame_acquisition(void *threadp)
@@ -531,6 +569,47 @@ void *Service_3_frame_storage(void *threadp)
 
         // after last write, set synchronous abort
         if (store_cnt == 10)
+        {
+            abortTest = TRUE;
+        };
+    }
+
+    pthread_exit((void *)0);
+}
+
+// Service_4 is the viewer thread which runs on a separate non-RT core and is triggered at the same cadence as Service_1 (frame acquisition).
+// Thread function is defined after Service_5 to keep all RT services together
+
+void *Service_5_frame_filter(void *threadp)
+{
+    struct timespec current_time_val;
+    double current_realtime;
+    unsigned long long S5Cnt = 0;
+    int filter_cnt;
+    threadParams_t *threadParams = (threadParams_t *)threadp;
+    printf("Frame filter thread running on CPU=%d \n", sched_getcpu());
+    clock_gettime(MY_CLOCK_TYPE, &current_time_val);
+    current_realtime = realtime(&current_time_val);
+    syslog(LOG_CRIT, "S5 thread @ sec=%6.9lf\n", current_realtime - start_realtime);
+    printf("S5 thread @ sec=%6.9lf\n", current_realtime - start_realtime);
+
+    while (!abortS5)
+    {
+        sem_wait(&semS5);
+
+        if (abortS5)
+            break;
+        S5Cnt++;
+
+        // DO WORK - apply filter to frame
+        filter_cnt = seq_frame_filter();
+
+        clock_gettime(MY_CLOCK_TYPE, &current_time_val);
+        current_realtime = realtime(&current_time_val);
+        syslog(LOG_CRIT, "S5 at 1 Hz on core %d for release %llu @ sec=%6.9lf\n", sched_getcpu(), S5Cnt, current_realtime - start_realtime);
+
+        // after last write, set synchronous abort
+        if (filter_cnt == 10)
         {
             abortTest = TRUE;
         };

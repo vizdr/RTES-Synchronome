@@ -40,7 +40,7 @@
 
 #define MAX_HRES (1920)
 #define MAX_VRES (1080)
-#define MAX_PIXEL_SIZE (3)
+#define MAX_PIXEL_SIZE (3) // for RGB24, which is the largest pixel size we will be using, so that we can allocate a scratchpad buffer that is large enough for any format we will be using
 
 #define HRES (640)
 #define VRES (480)
@@ -69,9 +69,9 @@
 #define COLOR_CONVERT_RGB
 // #define COLOR_CONVERT_GRAY
 #define DUMP_FRAMES
-#define ACQ_FRAMES_STORED_PER_FPS (5)
-#define DRIVER_MMAP_BUFFERS (6) // request buffers for delay
-
+#define ACQ_FRAMES_STORED_PER_FPS (5) // input ring buffer size should be large enough to hold at least 5 frames for each frame per second rate that we want to support, so that we can have a good chance of not losing frames while we are processing and saving frames, but also not so large that we are wasting a lot of memory on the ring buffer
+#define DRIVER_MMAP_BUFFERS (6)       // request buffers for delay
+#define RING_OUTPUT_BUFFER_SIZE (FRAMES_PER_SEC + 3)
 // Format is used by a number of functions, so made as a file global
 static struct v4l2_format fmt;
 struct v4l2_buffer frame_buf;
@@ -103,6 +103,31 @@ struct ring_buffer_t
 };
 
 static struct ring_buffer_t ring_buffer;
+
+struct save_out_frame_t
+{
+    unsigned char frame[HRES * VRES * PIXEL_SIZE * 3]; // for RGB24, which is the largest pixel size we will be using, so that we can allocate a buffer that is large enough for any format we will be using
+    struct timespec time_stamp;
+    char identifier_str[80];
+    bool is_ready_to_save;
+    bool is_filter_applied;
+};
+
+struct ring_out_buffer_t
+{
+    unsigned int ring_size;
+
+    int tail_idx;
+    int head_idx;
+    int count;
+
+    struct save_out_frame_t save_out_frame[ACQ_FRAMES_STORED_PER_FPS * FRAMES_PER_SEC];
+};
+
+static struct ring_out_buffer_t ring_output_buffer;
+
+unsigned char scratchpad_buffer[MAX_HRES * MAX_VRES * MAX_PIXEL_SIZE]; // this is used for processing and saving frames, so that we don't have to worry about the ring buffer being overwritten by the acquisition loop while we are processing or saving a frame
+bool is_scratchpad_buffer_in_use = false;                              // this is used to indicate whether the scratchpad buffer is currently being used for processing or saving a frame, so that we can avoid overwriting it with new frames from the acquisition loop while we are processing or saving a frame
 
 static int camera_device_fd = -1;
 struct buffer *buffers;
@@ -278,8 +303,6 @@ int read_framecnt = -STARTUP_FRAMES;
 int process_framecnt = 0;
 int save_framecnt = 0;
 
-unsigned char scratchpad_buffer[MAX_HRES * MAX_VRES * MAX_PIXEL_SIZE]; // this is used for processing and saving frames, so that we don't have to worry about the ring buffer being overwritten by the acquisition loop while we are processing or saving a frame
-
 static int save_image(const void *p, int size, struct timespec *frame_time)
 {
     int i, newi, newsize = 0;
@@ -356,9 +379,24 @@ static int process_image(const void *p, int size)
             u_temp = (int)frame_ptr[i + 1];
             y2_temp = (int)frame_ptr[i + 2];
             v_temp = (int)frame_ptr[i + 3];
-            yuv2rgb(y_temp, u_temp, v_temp, &scratchpad_buffer[newi], &scratchpad_buffer[newi + 1], &scratchpad_buffer[newi + 2]);
-            yuv2rgb(y2_temp, u_temp, v_temp, &scratchpad_buffer[newi + 3], &scratchpad_buffer[newi + 4], &scratchpad_buffer[newi + 5]);
+            if (is_scratchpad_buffer_in_use)
+            {
+                // printf("Scratchpad buffer is currently in use.\n");
+                yuv2rgb(y_temp, u_temp, v_temp, &scratchpad_buffer[newi], &scratchpad_buffer[newi + 1], &scratchpad_buffer[newi + 2]);
+                yuv2rgb(y2_temp, u_temp, v_temp, &scratchpad_buffer[newi + 3], &scratchpad_buffer[newi + 4], &scratchpad_buffer[newi + 5]);
+            }
+            else
+            {
+                yuv2rgb(y_temp, u_temp, v_temp, ring_output_buffer.save_out_frame[ring_output_buffer.tail_idx].frame + newi, &ring_output_buffer.save_out_frame[ring_output_buffer.tail_idx].frame[newi + 1], &ring_output_buffer.save_out_frame[ring_output_buffer.tail_idx].frame[newi + 2]);
+                yuv2rgb(y2_temp, u_temp, v_temp, &ring_output_buffer.save_out_frame[ring_output_buffer.tail_idx].frame[newi + 3], &ring_output_buffer.save_out_frame[ring_output_buffer.tail_idx].frame[newi + 4], &ring_output_buffer.save_out_frame[ring_output_buffer.tail_idx].frame[newi + 5]);
+            }
         }
+        if (!is_scratchpad_buffer_in_use)
+        {
+            ring_output_buffer.save_out_frame[ring_output_buffer.tail_idx].is_ready_to_save = true;
+            ring_output_buffer.tail_idx = (ring_output_buffer.tail_idx + 1) % ring_output_buffer.ring_size;
+        }
+
 #elif defined(COLOR_CONVERT_GRAY)
         // Pixels are YU and YV alternating, so YUYV which is 4 bytes
         // We want Y, so YY which is 2 bytes
@@ -366,8 +404,22 @@ static int process_image(const void *p, int size)
         for (i = 0, newi = 0; i < size; i = i + 4, newi = newi + 2)
         {
             // Y1=first byte and Y2=third byte
-            scratchpad_buffer[newi] = frame_ptr[i];
-            scratchpad_buffer[newi + 1] = frame_ptr[i + 2];
+            if (is_scratchpad_buffer_in_use)
+            {
+                // printf("Scratchpad buffer is currently in use.\n");
+                scratchpad_buffer[newi] = frame_ptr[i];
+                scratchpad_buffer[newi + 1] = frame_ptr[i + 2];
+            }
+            else
+            {
+                ring_output_buffer.save_out_frame[ring_output_buffer.tail_idx].frame[newi] = frame_ptr[i];
+                ring_output_buffer.save_out_frame[ring_output_buffer.tail_idx].frame[newi + 1] = frame_ptr[i + 2];
+            }
+        }
+        if (!is_scratchpad_buffer_in_use)
+        {
+            ring_output_buffer.save_out_frame[ring_output_buffer.tail_idx].is_ready_to_save = true;
+            ring_output_buffer.tail_idx = (ring_output_buffer.tail_idx + 1) % ring_output_buffer.ring_size;
         }
 #endif
     }
@@ -425,6 +477,12 @@ static int read_frame(void)
     return 1;
 }
 
+static int apply_filter(const void *p, int size)
+{
+    // this is where we would implement any additional filtering or processing on the frames that are in the ring buffer, but for simplicity, we will just save the processed frames to disk without any additional filtering or processing, so this function is just a placeholder for where that code would go if we wanted to implement it
+    return 0;
+}
+
 int seq_frame_read(void)
 {
     fd_set fds;
@@ -460,10 +518,14 @@ int seq_frame_read(void)
     clock_gettime(CLOCK_MONOTONIC, &time_now);
     fnow = (double)time_now.tv_sec + (double)time_now.tv_nsec / 1000000000.0;
 
+    if (-1 == xioctl(camera_device_fd, VIDIOC_QBUF, &frame_buf))
+        errno_exit("VIDIOC_QBUF");
+
     if (read_framecnt > 0)
     {
+        ring_buffer.save_frame[curr_frame_idx].time_stamp = time_now;
         printf("Acquisitation: read_framecnt=%d, rb.tail=%d, rb.head=%d, rb.count=%d at %lf and %lf FPS.\n", read_framecnt, ring_buffer.tail_idx, ring_buffer.head_idx, ring_buffer.count, (fnow - fstart), (double)(read_framecnt) / (fnow - fstart));
-        ring_buffer.save_frame[ring_buffer.tail_idx].time_stamp = time_now;
+       
         // syslog(LOG_CRIT, "read_framecnt=%d, rb.tail=%d, rb.head=%d, rb.count=%d at %lf and %lf FPS", read_framecnt, ring_buffer.tail_idx, ring_buffer.head_idx, ring_buffer.count, (fnow-fstart), (double)(read_framecnt) / (fnow-fstart));
         syslog(LOG_CRIT, "read_framecnt=%d at %lf and %lf FPS", read_framecnt, (fnow - fstart), (double)(read_framecnt) / (fnow - fstart));
     }
@@ -471,9 +533,6 @@ int seq_frame_read(void)
     {
         printf("at %lf\n", fnow);
     }
-
-    if (-1 == xioctl(camera_device_fd, VIDIOC_QBUF, &frame_buf))
-        errno_exit("VIDIOC_QBUF");
 
     printf("--Acquisitation read frame at: %lf\n", (fnow - read_start));
 
@@ -484,7 +543,7 @@ int seq_frame_read(void)
         double sel_start, sel_now;
         clock_gettime(CLOCK_MONOTONIC, &sel_ts_start);
         sel_start = (double)sel_ts_start.tv_sec + (double)sel_ts_start.tv_nsec / 1000000000.0;
-
+        // curr_frame_idx should be more than 1 here because we skip the first few frames
         diffsum = frame_diff_yuyv((void *)&(ring_buffer.save_frame[curr_frame_idx].frame[0]), (void *)&(ring_buffer.save_frame[curr_frame_idx - 1].frame[0]), HRES, VRES);
         frame_diff_pers = frame_percent_diff(diffsum, HRES, VRES, false);
 
@@ -508,6 +567,7 @@ int seq_frame_read(void)
         sel_now = (double)sel_ts_now.tv_sec + (double)sel_ts_now.tv_nsec / 1000000000.0;
         printf(" Selection: read_framecnt=%d, rb.tail=%d, rb.head=%d, rb.count=%d at %lf and %lf FPS.\n", read_framecnt, ring_buffer.tail_idx, ring_buffer.head_idx, ring_buffer.count, (sel_now - sel_start), (double)(read_framecnt) / (sel_now - fstart));
     }
+    return read_framecnt;
 }
 
 int seq_frame_process(void)
@@ -515,7 +575,6 @@ int seq_frame_process(void)
     int cnt;
     struct timespec proc_ts_start, proc_ts_now;
     double proc_start, proc_now;
-    
 
     printf("processing rb.tail=%d, rb.head=%d, rb.count=%d\n", ring_buffer.tail_idx, ring_buffer.head_idx, ring_buffer.count);
 
@@ -553,7 +612,7 @@ int seq_frame_process(void)
 
 int seq_frame_store(void)
 {
-    int cnt;
+    int cnt, cnt2 = 0;
     struct timespec store_ts_start, store_ts_now;
     double store_start, store_now;
 
@@ -561,12 +620,25 @@ int seq_frame_store(void)
     {
         clock_gettime(CLOCK_MONOTONIC, &store_ts_start);
         store_start = (double)store_ts_start.tv_sec + (double)store_ts_start.tv_nsec / 1000000000.0;
-        cnt = save_image(scratchpad_buffer, HRES * VRES * PIXEL_SIZE, &time_now);
-        printf("save_framecnt=%d ", save_framecnt);
-        clock_gettime(CLOCK_MONOTONIC, &time_now);
-        fnow = (double)time_now.tv_sec + (double)time_now.tv_nsec / 1000000000.0;
-        printf(" saved at %lf, @ %lf FPS\n", (fnow - fstart), (double)(save_framecnt) / (fnow - fstart));
-        printf("---Saving time for this frame: %lf\n", (fnow - store_start));
+        // cnt = save_image(scratchpad_buffer, HRES * VRES * PIXEL_SIZE, &time_now);
+
+        if ((ring_output_buffer.save_out_frame[ring_output_buffer.head_idx].is_ready_to_save) && (ring_output_buffer.save_out_frame[ring_output_buffer.head_idx].is_filter_applied))
+        {
+           
+            cnt2 = save_image((void *)&(ring_output_buffer.save_out_frame[ring_output_buffer.head_idx].frame[0]), HRES * VRES * PIXEL_SIZE, &time_now);
+
+            ring_output_buffer.save_out_frame[ring_output_buffer.head_idx].is_ready_to_save = false;
+            ring_output_buffer.save_out_frame[ring_output_buffer.head_idx].is_filter_applied = false;
+
+            ring_output_buffer.head_idx = (ring_output_buffer.head_idx + 1) % ring_output_buffer.ring_size;
+
+            printf("save_framecnt=%d ", save_framecnt);
+
+            clock_gettime(CLOCK_MONOTONIC, &time_now);
+            fnow = (double)time_now.tv_sec + (double)time_now.tv_nsec / 1000000000.0;
+            printf(" saved at %lf, @ %lf FPS\n", (fnow - fstart), (double)(save_framecnt) / (fnow - fstart));
+            printf("---Saving time for this frame: %lf\n", (fnow - store_start));
+        }
     }
     else
     {
@@ -574,7 +646,25 @@ int seq_frame_store(void)
         printf("at %lf\n", fnow - fstart);
     }
 
-    return cnt;
+    return cnt2;
+}
+
+int seq_frame_filter(void)
+{
+    // this is where we would implement any additional filtering or processing on the processed frames that are in the output ring buffer, but for simplicity, we will just save the processed frames to disk without any additional filtering or processing, so this function is just a placeholder for where that code would go if we wanted to implement it
+
+    if ((ring_output_buffer.save_out_frame[ring_output_buffer.head_idx].is_ready_to_save) && (!ring_output_buffer.save_out_frame[ring_output_buffer.head_idx].is_filter_applied))
+    {
+        // process the frame in the output ring buffer, which should already be in RGB format, so we can just save it to disk without any additional processing, but if we wanted to implement any additional filtering or processing on the processed frames, we would do it here before saving the frame to disk
+        // save_image((void *)&(ring_output_buffer.save_out_frame[i].frame[0]), HRES * VRES * PIXEL_SIZE, &time_now);
+
+        apply_filter((void *)&(ring_output_buffer.save_out_frame[ring_output_buffer.head_idx].frame[0]), HRES * VRES * PIXEL_SIZE * 3);
+        ring_output_buffer.save_out_frame[ring_output_buffer.head_idx].is_filter_applied = true;
+        
+        printf("Processed and saved %d frame from output ring buffer \n", save_framecnt);
+    }
+
+    return 0;
 }
 
 static void mainloop(void)
@@ -583,10 +673,12 @@ static void mainloop(void)
     struct timespec read_delay;
     struct timespec time_error;
 
+    // default is false because we want to use the ring buffer for processing and saving frames for the threading case. Call of mainloop is only used for the sequential case
+    is_scratchpad_buffer_in_use = true;
+
     // Replace this with a delay designed for your rate
     // of frame acquitision and storage.
     //
-
 #if (FRAMES_PER_SEC == 1)
     printf("Running at 1 frame/sec\n");
     read_delay.tv_sec = 0;
@@ -668,7 +760,6 @@ static void mainloop(void)
                         process_image((void *)&(ring_buffer.save_frame[ring_buffer.head_idx].frame[0]), HRES * VRES * PIXEL_SIZE);
                         // process_image(buffers[frame_buf.index].start, frame_buf.bytesused);
                         printf("bytesused=%d, hxvxp=%d\n", frame_buf.bytesused, HRES * VRES * PIXEL_SIZE);
-                        process_image((void *)&(ring_buffer.save_frame[ring_buffer.head_idx].frame[0]), HRES * VRES * PIXEL_SIZE);
 
                         printf("process from rb.tail=%d, rb.head=%d, ptr=%p\n", ring_buffer.tail_idx, ring_buffer.head_idx, (void *)&(ring_buffer.save_frame[ring_buffer.head_idx].frame[0]));
                         save_image(scratchpad_buffer, HRES * VRES * PIXEL_SIZE, &time_now);
@@ -749,6 +840,27 @@ static void uninit_device(void)
             errno_exit("munmap");
 
     free(buffers);
+}
+
+static void init_output_buf(void)
+{
+    // for output buffer, we will just use a single buffer that we will write to and then save to disk, so we don't need to worry about mmap or anything like that, we can just use malloc to allocate a buffer for the processed frame that we will save to disk
+    // if we wanted to be more sophisticated, we could set up a ring buffer for the processed frames as well, but for simplicity, we will just use a single buffer for the processed frame that we will save to disk
+    // this is because the processing and saving of frames is much slower than the acquisition of frames, so we don't need to worry about the processed frames being overwritten by the acquisition loop while we are processing or saving a frame
+    // if we wanted to be more sophisticated, we could set up a separate thread for processing and saving frames, and then use a mutex to protect access to the processed frame buffer, but for simplicity, we will just use a single buffer for the processed frame that we will save to disk
+
+    printf("Initializing output buffer for processed frames\n");
+    ring_output_buffer.head_idx = 0;
+    ring_output_buffer.tail_idx = 0;
+    ring_output_buffer.count = 0;
+    ring_output_buffer.ring_size = RING_OUTPUT_BUFFER_SIZE;
+    for (int i = 0; i < ring_output_buffer.ring_size; i++)
+    {
+        ring_output_buffer.save_out_frame[i].is_filter_applied = false;
+        ring_output_buffer.save_out_frame[i].is_ready_to_save = false;
+        memset(&ring_output_buffer.save_out_frame[i].time_stamp, 0, sizeof(ring_output_buffer.save_out_frame[i].time_stamp));
+        memset(ring_output_buffer.save_out_frame[i].identifier_str, 0, sizeof(ring_output_buffer.save_out_frame[i].identifier_str));
+    }
 }
 
 static void init_mmap(char *dev_name)
@@ -985,6 +1097,7 @@ static void open_device(char *dev_name)
     }
 }
 
+// Sequencial case. Note that it is not called from seqv4l2, where threading is used.
 int v4l2_frame_acquisition_loop(char *dev_name)
 {
 
@@ -1010,6 +1123,7 @@ int v4l2_frame_acquisition_loop(char *dev_name)
 
 int v4l2_frame_acquisition_initialization(char *dev_name)
 {
+    init_output_buf();
     // initialization of V4L2
     open_device(dev_name);
     init_device(dev_name);
