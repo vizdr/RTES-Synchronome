@@ -580,6 +580,7 @@ void *Service_3_frame_storage(void *threadp)
 // Service_4 is the viewer thread which runs on a separate non-RT core and is triggered at the same cadence as Service_1 (frame acquisition).
 // Thread function is defined after Service_5 to keep all RT services together
 
+// Service_5 for applying a filter to the current frame
 void *Service_5_frame_filter(void *threadp)
 {
     struct timespec current_time_val;
@@ -609,7 +610,7 @@ void *Service_5_frame_filter(void *threadp)
         syslog(LOG_CRIT, "S5 at 1 Hz on core %d for release %llu @ sec=%6.9lf\n", sched_getcpu(), S5Cnt, current_realtime - start_realtime);
 
         // after last write, set synchronous abort
-        if (filter_cnt == 10)
+        if (filter_cnt == 181)
         {
             abortTest = TRUE;
         };

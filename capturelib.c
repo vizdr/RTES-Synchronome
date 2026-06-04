@@ -11,6 +11,8 @@
  *
  *      This program is provided with the V4L2 API
  * see http://linuxtv.org/docs.php for more information
+ * 
+ * changed by Vladimir Zdravkov to match requirents of the cap project for ECEN 5623 at the University of Colorado Boulder
  */
 #define _GNU_SOURCE
 #include <stdio.h>
@@ -302,6 +304,7 @@ void yuv2rgb(int y, int u, int v, unsigned char *r, unsigned char *g, unsigned c
 int read_framecnt = -STARTUP_FRAMES;
 int process_framecnt = 0;
 int save_framecnt = 0;
+int filter_framecnt = 0;
 
 static int save_image(const void *p, int size, struct timespec *frame_time)
 {
@@ -477,10 +480,55 @@ static int read_frame(void)
     return 1;
 }
 
-static int apply_filter(const void *p, int size)
+// 3x3 Laplacian sharpening kernel applied to RGB24 frame data in-place.
+//
+// Kernel:  [ 0 -1  0 ]
+//          [-1  5 -1 ]    output = 5*center - top - bottom - left - right
+//          [ 0 -1  0 ]
+//
+// Deadline safety margin is very large here because:
+//   - No dynamic allocation: uses global scratchpad_buffer as read-only copy.
+//   - No system calls: pure integer arithmetic.
+//   - Bounded WCET: 638x478 interior pixels x 3 channels x ~12 ops
+//     = ~11M ops => ~3-6 ms on RPi4 @ 1.5 GHz. Safety margin > 150x (15x for 10Hz).
+//   - scratchpad_buffer is free here because is_scratchpad_buffer_in_use == false
+//     in the threaded path (apply_filter is only called from seq_frame_filter).
+static int apply_filter(void *p, int size)
 {
-    // this is where we would implement any additional filtering or processing on the frames that are in the ring buffer, but for simplicity, we will just save the processed frames to disk without any additional filtering or processing, so this function is just a placeholder for where that code would go if we wanted to implement it
-    return 0;
+    unsigned char *frame  = (unsigned char *)p;
+    const int width       = HRES;
+    const int height      = VRES;
+    const int channels    = 3;                    // RGB24: 3 bytes per pixel
+    const int stride      = width * channels;
+    const int data_size   = height * stride;
+
+    // Copy original frame so we read unmodified neighbors while writing output.
+    memcpy(scratchpad_buffer, frame, data_size);
+
+    // Skip border rows/columns — output pixels at edge keep their original value.
+    for (int r = 1; r < height - 1; r++)
+    {
+        for (int c = 1; c < width - 1; c++)
+        {
+            for (int k = 0; k < channels; k++)
+            {
+                int center = scratchpad_buffer[ r      * stride +  c      * channels + k];
+                int top    = scratchpad_buffer[(r - 1) * stride +  c      * channels + k];
+                int bottom = scratchpad_buffer[(r + 1) * stride +  c      * channels + k];
+                int left   = scratchpad_buffer[ r      * stride + (c - 1) * channels + k];
+                int right  = scratchpad_buffer[ r      * stride + (c + 1) * channels + k];
+
+                int val = 5 * center - top - bottom - left - right;
+
+                if      (val < 0)   val = 0;
+                else if (val > 255) val = 255;
+
+                frame[r * stride + c * channels + k] = (unsigned char)val;
+            }
+        }
+    }
+
+    return data_size;
 }
 
 int seq_frame_read(void)
@@ -662,9 +710,13 @@ int seq_frame_filter(void)
         ring_output_buffer.save_out_frame[ring_output_buffer.head_idx].is_filter_applied = true;
         
         printf("Processed and saved %d frame from output ring buffer \n", save_framecnt);
+        filter_framecnt++;
+        clock_gettime(CLOCK_MONOTONIC, &time_now);
+        fnow = (double)time_now.tv_sec + (double)time_now.tv_nsec / 1000000000.0;
+        printf(" filtered at %lf, @ %lf FPS\n", (fnow - fstart), (double)(filter_framecnt) / (fnow - fstart));
     }
 
-    return 0;
+    return filter_framecnt;
 }
 
 static void mainloop(void)
