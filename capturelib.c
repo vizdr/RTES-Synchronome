@@ -604,6 +604,7 @@ int seq_frame_read(void)
             if (ring_buffer.count > 2)
             {
                 ring_buffer.save_frame[curr_frame_idx - 2].is_selected_to_save = true;
+                ring_buffer.head_idx = (curr_frame_idx - 2) % ring_buffer.ring_size;  // we should prepare to process the frame which does not differ from the previous frame
             }
         }
         else
