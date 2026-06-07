@@ -31,8 +31,10 @@
 #include <sys/time.h>
 #include <sys/sysinfo.h>
 #include <errno.h>
-#include <sys/mman.h>    // for mlockall
+#include <sys/mman.h> // for mlockall
 #include <signal.h>
+#include <stdatomic.h>
+#include <termios.h> // for keyboard input without blocking
 
 #define USEC_PER_MSEC (1000)
 #define NANOSEC_PER_MSEC (1000000)
@@ -44,7 +46,7 @@
 #define SEQ_CORE (1)
 #define RT_CORE (2)
 
- #define NUM_THREADS (4)
+#define NUM_THREADS (5) /* number of service threads, not including viewer thread */
 
 // Of the available user space clocks, CLOCK_MONONTONIC_RAW is typically most precise and not subject to
 // updates from external timer adjustments
@@ -58,16 +60,16 @@
 // #define MY_CLOCK_TYPE CLOCK_MONTONIC_COARSE
 
 /* ── Viewer / Service_4 configuration ─────────────────────────── */
-#define VIEWER_ENABLE        1    /* 0 = compile out all SDL2 code   */
-#define VIEWER_SHOW_CURRENT  1    /* Window 0: latest frame          */
-#define VIEWER_SHOW_PREVIOUS 1    /* Window 1: previous frame        */
-#define VIEWER_SHOW_DIFF     1    /* Window 2: |curr-prev| x amplify */
-#define VIEWER_WIN_W         640  /* display window width  (pixels)  */
-#define VIEWER_WIN_H         480  /* display window height (pixels)  */
-#define VIEWER_WIN_SPACING   20   /* gap between windows (pixels)    */
-#define VIEWER_WIN_Y         50   /* initial Y of all windows        */
-#define VIEWER_DIFF_AMPLIFY  4    /* diff brightness multiplier      */
-#define VIEWER_CORE          3    /* CPU core for Service_4          */
+#define VIEWER_ENABLE 1        /* 0 = compile out all SDL2 code   */
+#define VIEWER_SHOW_CURRENT 1  /* Window 0: latest frame          */
+#define VIEWER_SHOW_PREVIOUS 1 /* Window 1: previous frame        */
+#define VIEWER_SHOW_DIFF 1     /* Window 2: |curr-prev| x amplify */
+#define VIEWER_WIN_W 640       /* display window width  (pixels)  */
+#define VIEWER_WIN_H 480       /* display window height (pixels)  */
+#define VIEWER_WIN_SPACING 20  /* gap between windows (pixels)    */
+#define VIEWER_WIN_Y 50        /* initial Y of all windows        */
+#define VIEWER_DIFF_AMPLIFY 4  /* diff brightness multiplier      */
+#define VIEWER_CORE 3          /* CPU core for Service_4          */
 /* ─────────────────────────────────────────────────────────────── */
 
 #if VIEWER_ENABLE
@@ -75,10 +77,10 @@
 #endif
 
 int abortTest = FALSE;
-int abortS1 = FALSE, abortS2 = FALSE, abortS3 = FALSE, abortS5 = FALSE;
-sem_t semS1, semS2, semS3, semS5;
+atomic_int abortS1 = FALSE, abortS2 = FALSE, abortS3 = FALSE, abortS5 = FALSE;
+sem_t semS1, semS2, semS3, semS5, semS6;
 #if VIEWER_ENABLE
-int   abortS4 = FALSE;
+int abortS4 = FALSE;
 sem_t semS4;
 #endif
 struct timespec start_time_val;
@@ -89,6 +91,8 @@ static struct itimerspec itime = {{1, 0}, {1, 0}};
 static struct itimerspec last_itime;
 
 static unsigned long long seqCnt = 0;
+
+atomic_int skip_filter_requested = 0;
 
 typedef struct
 {
@@ -101,15 +105,16 @@ void *Service_1_frame_acquisition(void *threadp);
 void *Service_2_frame_process(void *threadp);
 void *Service_3_frame_storage(void *threadp);
 void *Service_5_frame_filter(void *threadp);
+void *Service_6_keyboard_reader(void *threadp);
 
 #if VIEWER_ENABLE
 void *Service_4_frame_display(void *threadp);
-int   seq_frame_get_for_display(unsigned char *curr_rgb,
-                                 unsigned char *prev_rgb,
-                                 int *diff_amplify,
-                                 int *is_motion,
-                                 int *is_saved,
-                                 int *frame_num);
+int seq_frame_get_for_display(unsigned char *curr_rgb,
+                              unsigned char *prev_rgb,
+                              int *diff_amplify,
+                              int *is_motion,
+                              int *is_saved,
+                              int *frame_num);
 #endif
 
 int seq_frame_read(void);
@@ -124,6 +129,24 @@ void print_scheduler(void);
 int v4l2_frame_acquisition_initialization(char *dev_name);
 int v4l2_frame_acquisition_shutdown(void);
 int v4l2_frame_acquisition_loop(char *dev_name);
+
+static void skip_filter_handler(int sig, siginfo_t *si, void *ctx)
+{
+    int key = si->si_value.sival_int;
+    switch (key)
+    {    case 's':
+         case 'S':
+            atomic_store_explicit(&skip_filter_requested, 1, memory_order_relaxed);;
+            break;
+        case 'r':
+        case 'R':
+            atomic_store_explicit(&skip_filter_requested, 0, memory_order_relaxed);;
+            break;  
+        default:
+            printf("Received unknown signal with key %d\n", key);
+            return;
+    }
+}
 
 void main(void)
 {
@@ -143,10 +166,12 @@ void main(void)
     pthread_attr_t rt_sched_attr[NUM_THREADS];
     int rt_max_prio, rt_min_prio, cpuidx;
 
-    #if VIEWER_ENABLE
+#if VIEWER_ENABLE
     pthread_t viewer_thread;
     threadParams_t threadParams_viewer;
-    #endif
+#endif
+
+    threadParams_t threadParams_key_reader;
 
     struct sched_param rt_param[NUM_THREADS];
     struct sched_param main_param;
@@ -154,10 +179,15 @@ void main(void)
     pthread_attr_t main_attr;
     pid_t mainpid;
 
+    struct sigaction sa;
+    sa.sa_flags = SA_SIGINFO;
+
+    sa.sa_sigaction = skip_filter_handler;
+
     v4l2_frame_acquisition_initialization(dev_name);
 
     // lock memory to prevent paging in this demo application which is not handling page faults in real-time safe manner
-      if (mlockall(MCL_CURRENT | MCL_FUTURE) != 0)
+    if (mlockall(MCL_CURRENT | MCL_FUTURE) != 0)
         perror("mlockall");
 
     // required to get camera initialized and ready
@@ -209,6 +239,11 @@ void main(void)
     if (sem_init(&semS5, 0, 0))
     {
         printf("Failed to initialize S5 semaphore\n");
+        exit(-1);
+    }
+    if (sem_init(&semS6, 0, 0))
+    {
+        printf("Failed to initialize S6 semaphore\n");
         exit(-1);
     }
     mainpid = getpid();
@@ -303,9 +338,9 @@ void main(void)
     // SDL2 is not RT-safe; a dedicated non-RT core isolates display stalls
     // from the RT capture pipeline on RT_CORE.
     {
-        pthread_attr_t     viewer_attr;
+        pthread_attr_t viewer_attr;
         struct sched_param viewer_param;
-        cpu_set_t          viewercpu;
+        cpu_set_t viewercpu;
 
         viewer_param.sched_priority = 0;
         CPU_ZERO(&viewercpu);
@@ -317,9 +352,9 @@ void main(void)
         pthread_attr_setschedparam(&viewer_attr, &viewer_param);
         pthread_attr_setaffinity_np(&viewer_attr, sizeof(cpu_set_t), &viewercpu);
 
-        #ifdef VIEWER_ENABLE
+#ifdef VIEWER_ENABLE
         threadParams_viewer.threadIdx = (sizeof(threadParams) / sizeof(threadParams[0])) + 1; /* index after last RT service thread */
-        #endif
+#endif
 
         rc = pthread_create(&viewer_thread, &viewer_attr,
                             Service_4_frame_display, (void *)&(threadParams_viewer));
@@ -342,7 +377,6 @@ void main(void)
     else
         printf("pthread_create successful for service 5\n");
 
-
     // Wait for service threads to initialize and await relese by sequencer.
     //
     // Note that the sleep is not necessary of RT service threads are created with
@@ -350,6 +384,27 @@ void main(void)
     // program.
     //
     // sleep(1);
+
+    // Service_6 SCHED_OTHER prio=0 @ 1 Hz, for keyboard reading to trigger synchronous abort of the test.
+    pthread_attr_t key_read_attr;
+    struct sched_param key_read_param;
+    cpu_set_t viewercpu;
+
+    pthread_attr_init(&key_read_attr);
+    pthread_attr_setinheritsched(&key_read_attr, PTHREAD_EXPLICIT_SCHED);
+    pthread_attr_setschedpolicy(&key_read_attr, SCHED_OTHER);
+    pthread_attr_setschedparam(&key_read_attr, &key_read_param);
+    CPU_ZERO(&viewercpu);
+    CPU_SET(VIEWER_CORE, &viewercpu);
+    pthread_attr_setaffinity_np(&key_read_attr, sizeof(cpu_set_t), &viewercpu);
+
+    threadParams_key_reader.threadIdx = (sizeof(threadParams) / sizeof(threadParams[0])) + 2; /* index after last RT service thread and viewer thread */
+    rc = pthread_create(&viewer_thread, &key_read_attr,
+                        Service_6_keyboard_reader, (void *)&(threadParams_key_reader));
+    if (rc < 0)
+        perror("pthread_create for service 6 - keyboard reader");
+    else
+        printf("pthread_create successful for service 6\n");
 
     // Create Sequencer thread, which like a cyclic executive, is highest prio
     printf("Start sequencer\n");
@@ -363,7 +418,6 @@ void main(void)
     sev._sigev_un._tid = mainpid; // main thread TID
     sev.sigev_value.sival_ptr = &timer_1;
     timer_create(CLOCK_REALTIME, &sev, &timer_1);
-
 
     signal(SIGALRM, (void (*)())Sequencer);
 
@@ -390,8 +444,9 @@ void main(void)
 #if VIEWER_ENABLE
     if ((rc = pthread_join(viewer_thread, NULL)) < 0)
         perror("main pthread_join for viewer thread");
-    else        printf("joined viewer thread\n");
-#endif 
+    else
+        printf("joined viewer thread\n");
+#endif
 
     v4l2_frame_acquisition_shutdown();
 
@@ -427,6 +482,7 @@ void Sequencer(int id)
         sem_post(&semS2);
         sem_post(&semS3);
         sem_post(&semS5);
+        sem_post(&semS6);
 #if VIEWER_ENABLE
         sem_post(&semS4);
 #endif
@@ -435,7 +491,7 @@ void Sequencer(int id)
     seqCnt++;
 
     clock_gettime(MY_CLOCK_TYPE, &current_time_val);
-    current_realtime=realtime(&current_time_val);
+    current_realtime = realtime(&current_time_val);
     // printf("Sequencer on core %d for cycle %llu @ sec=%6.9lf\n", sched_getcpu(), seqCnt, current_realtime-start_realtime);
     // syslog(LOG_CRIT, "Sequencer on core %d for cycle %llu @ sec=%6.9lf\n", sched_getcpu(), seqCnt, current_realtime-start_realtime);
 
@@ -457,12 +513,17 @@ void Sequencer(int id)
     // Service_4 (Viewer) @ 5 Hz — same cadence as Service_1 (frame acquisition).
     // Service_1 is higher priority and runs on RT_CORE first; by the time Service_4
     // wakes on VIEWER_CORE the ring buffer slot it reads is already complete.
-    if ((seqCnt % 20) == 0) sem_post(&semS4);
+    if ((seqCnt % 20) == 0)
+        sem_post(&semS4);
 #endif
 
     // Service_5 @ 1 Hz
     if ((seqCnt % 100) == 0)
         sem_post(&semS5);
+
+    // Service_6 @ 1 Hz
+    if ((seqCnt % 100) == 0)
+        sem_post(&semS6);
 }
 
 void *Service_1_frame_acquisition(void *threadp)
@@ -528,7 +589,7 @@ void *Service_2_frame_process(void *threadp)
         S2Cnt++;
 
         // DO WORK - transform frame
-        
+
         process_cnt = seq_frame_process();
 
         clock_gettime(MY_CLOCK_TYPE, &current_time_val);
@@ -586,7 +647,7 @@ void *Service_5_frame_filter(void *threadp)
     struct timespec current_time_val;
     double current_realtime;
     unsigned long long S5Cnt = 0;
-    int filter_cnt;
+    int filter_cnt = 0;
     threadParams_t *threadParams = (threadParams_t *)threadp;
     printf("Frame filter thread running on CPU=%d \n", sched_getcpu());
     clock_gettime(MY_CLOCK_TYPE, &current_time_val);
@@ -603,7 +664,15 @@ void *Service_5_frame_filter(void *threadp)
         S5Cnt++;
 
         // DO WORK - apply filter to frame
-        filter_cnt = seq_frame_filter();
+        // filter_cnt = seq_frame_filter();
+        if (skip_filter_requested > 0) 
+        {
+            printf("S5: skipping filter work this cycle (user request)\n");
+        }
+        else
+        {
+            filter_cnt = seq_frame_filter();
+        }
 
         clock_gettime(MY_CLOCK_TYPE, &current_time_val);
         current_realtime = realtime(&current_time_val);
@@ -663,24 +732,24 @@ void print_scheduler(void)
 #if VIEWER_ENABLE
 void *Service_4_frame_display(void *threadp)
 {
-    struct timespec    current_time_val;
-    double             current_realtime;
+    struct timespec current_time_val;
+    double current_realtime;
     unsigned long long S4Cnt = 0;
-    int                nwins = 0;
-    int                curr_slot = -1, prev_slot = -1, diff_slot = -1;
-    int                i, frame_bytes;
-    int                is_motion = 0, is_saved = 0, fnum = 0, diff_amp;
-    char               title[80];
-    SDL_Event          ev;
-    int                xpos = 0;
+    int nwins = 0;
+    int curr_slot = -1, prev_slot = -1, diff_slot = -1;
+    int i, frame_bytes;
+    int is_motion = 0, is_saved = 0, fnum = 0, diff_amp;
+    char title[80];
+    SDL_Event ev;
+    int xpos = 0;
 
     static unsigned char curr_rgb[VIEWER_WIN_W * VIEWER_WIN_H * 3];
     static unsigned char prev_rgb[VIEWER_WIN_W * VIEWER_WIN_H * 3];
     static unsigned char diff_buf[VIEWER_WIN_W * VIEWER_WIN_H * 3];
 
-    SDL_Window   *win[3] = {NULL, NULL, NULL};
+    SDL_Window *win[3] = {NULL, NULL, NULL};
     SDL_Renderer *ren[3] = {NULL, NULL, NULL};
-    SDL_Texture  *tex[3] = {NULL, NULL, NULL};
+    SDL_Texture *tex[3] = {NULL, NULL, NULL};
 
     if (SDL_Init(SDL_INIT_VIDEO) != 0)
     {
@@ -689,27 +758,29 @@ void *Service_4_frame_display(void *threadp)
     }
 
 /* Create one SDL window + renderer + streaming RGB24 texture at xpos, advance xpos. */
-#define MAKE_WINDOW(label, slot_var) do {                                        \
-    (slot_var) = nwins;                                                          \
-    win[nwins] = SDL_CreateWindow((label), xpos, VIEWER_WIN_Y,                   \
-                      VIEWER_WIN_W, VIEWER_WIN_H, SDL_WINDOW_RESIZABLE);         \
-    ren[nwins] = SDL_CreateRenderer(win[nwins], -1,                              \
-                      SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);     \
-    tex[nwins] = SDL_CreateTexture(ren[nwins], SDL_PIXELFORMAT_RGB24,            \
-                      SDL_TEXTUREACCESS_STREAMING,                               \
-                      VIEWER_WIN_W, VIEWER_WIN_H);                               \
-    xpos += VIEWER_WIN_W + VIEWER_WIN_SPACING;                                   \
-    nwins++;                                                                     \
-} while (0)
+#define MAKE_WINDOW(label, slot_var)                                                           \
+    do                                                                                         \
+    {                                                                                          \
+        (slot_var) = nwins;                                                                    \
+        win[nwins] = SDL_CreateWindow((label), xpos, VIEWER_WIN_Y,                             \
+                                      VIEWER_WIN_W, VIEWER_WIN_H, SDL_WINDOW_RESIZABLE);       \
+        ren[nwins] = SDL_CreateRenderer(win[nwins], -1,                                        \
+                                        SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC); \
+        tex[nwins] = SDL_CreateTexture(ren[nwins], SDL_PIXELFORMAT_RGB24,                      \
+                                       SDL_TEXTUREACCESS_STREAMING,                            \
+                                       VIEWER_WIN_W, VIEWER_WIN_H);                            \
+        xpos += VIEWER_WIN_W + VIEWER_WIN_SPACING;                                             \
+        nwins++;                                                                               \
+    } while (0)
 
 #if VIEWER_SHOW_CURRENT
-    MAKE_WINDOW("Current Frame",  curr_slot);
+    MAKE_WINDOW("Current Frame", curr_slot);
 #endif
 #if VIEWER_SHOW_PREVIOUS
     MAKE_WINDOW("Previous Frame", prev_slot);
 #endif
 #if VIEWER_SHOW_DIFF
-    MAKE_WINDOW("Diff",           diff_slot);
+    MAKE_WINDOW("Diff", diff_slot);
 #endif
 
 #undef MAKE_WINDOW
@@ -722,26 +793,33 @@ void *Service_4_frame_display(void *threadp)
     while (!abortS4)
     {
         sem_wait(&semS4);
-        if (abortS4) break;
+        if (abortS4)
+            break;
         S4Cnt++;
 
         /* to avoid further work on outdated frames we drain queued posts so we always render the most recent frame */
-        while (sem_trywait(&semS4) == 0) {}
+        while (sem_trywait(&semS4) == 0)
+        {
+        }
 
         /* SDL event pump — must run on the thread that owns the windows */
         while (SDL_PollEvent(&ev))
         {
             if (ev.type == SDL_QUIT ||
-               (ev.type == SDL_KEYDOWN && ev.key.keysym.sym == SDLK_ESCAPE))
+                (ev.type == SDL_KEYDOWN && ev.key.keysym.sym == SDLK_ESCAPE))
                 abortTest = TRUE;
         }
 
-        if (abortTest) { abortS4 = TRUE; break; }
+        if (abortTest)
+        {
+            abortS4 = TRUE;
+            break;
+        }
 
         diff_amp = VIEWER_DIFF_AMPLIFY;
         if (seq_frame_get_for_display(curr_rgb, prev_rgb,
                                       &diff_amp, &is_motion, &is_saved, &fnum) < 0)
-            continue;   /* fewer than 2 frames acquired yet */
+            continue; /* fewer than 2 frames acquired yet */
 
         /* per-pixel amplified absolute diff across all RGB channels */
         frame_bytes = VIEWER_WIN_W * VIEWER_WIN_H * 3;
@@ -791,3 +869,53 @@ void *Service_4_frame_display(void *threadp)
     pthread_exit((void *)0);
 }
 #endif /* VIEWER_ENABLE */
+
+void *Service_6_keyboard_reader(void *threadp)
+{
+    struct termios orig_termios, raw_termios;
+    fd_set readfds;
+    struct timeval timeout;
+    char ch;
+    int rv;
+
+    tcgetattr(STDIN_FILENO, &orig_termios);
+    raw_termios = orig_termios;
+    raw_termios.c_lflag &= ~(ICANON | ECHO);
+    raw_termios.c_cc[VMIN] = 0;
+    raw_termios.c_cc[VTIME] = 0;
+    tcsetattr(STDIN_FILENO, TCSANOW, &raw_termios);
+
+    while (!abortTest)
+    {
+        FD_ZERO(&readfds);
+        FD_SET(STDIN_FILENO, &readfds);
+
+        timeout.tv_sec = 0;
+        timeout.tv_usec = 1000000; // 1000 ms poll period — reset every iteration
+
+        rv = select(STDIN_FILENO + 1, &readfds, NULL, NULL, &timeout);
+
+        if (rv > 0 && FD_ISSET(STDIN_FILENO, &readfds))
+        {
+            if (ch == 's' || ch == 'S' || ch == 'r' || ch == 'R')
+            {
+                union sigval sv = {.sival_int = (int)ch};
+                sigqueue(getpid(), SIGRTMIN + 1, sv);
+            }
+            // any other key: just ignore it, no abort
+            else
+            {
+                printf("Read error or EOF on stdin\n");
+                abortTest = TRUE;
+            }
+        }
+        else if (rv < 0 && errno != EINTR)
+        {
+            break; // genuine select() error
+        }
+        // rv == 0: timeout — loop back and re-check abortTest
+    }
+
+    tcsetattr(STDIN_FILENO, TCSANOW, &orig_termios);
+    pthread_exit((void *)0);
+}
