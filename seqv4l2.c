@@ -170,7 +170,7 @@ void main(void)
     pthread_t viewer_thread;
     threadParams_t threadParams_viewer;
 #endif
-
+    pthread_t key_reader_thread;
     threadParams_t threadParams_key_reader;
 
     struct sched_param rt_param[NUM_THREADS];
@@ -273,7 +273,7 @@ void main(void)
     CPU_ZERO(&seqcpu);
     CPU_SET(SEQ_CORE, &seqcpu);
     sched_setaffinity(getpid(), sizeof(cpu_set_t), &seqcpu);
-    printf("Sequencer (main) thread running on CPU=%d from %d available CPUs\n", sched_getcpu(), CPU_COUNT(&threadcpu));
+    printf("\nSequencer (main) thread running on CPU=%d from %d available CPUs\n", sched_getcpu(), CPU_COUNT(&threadcpu));
 
     for (i = 0; i < (NUM_THREADS); i++)
     {
@@ -282,6 +282,7 @@ void main(void)
         CPU_ZERO(&threadcpu);
         cpuidx = (RT_CORE);
         CPU_SET(cpuidx, &threadcpu);
+        if(i == 0)
         printf("Service threads will run on %d CPU cores\n", CPU_COUNT(&threadcpu));
 
         rc = pthread_attr_init(&rt_sched_attr[i]);
@@ -319,7 +320,7 @@ void main(void)
     pthread_attr_setschedparam(&rt_sched_attr[1], &rt_param[1]);
     rc = pthread_create(&threads[1], &rt_sched_attr[1], Service_2_frame_process, (void *)&(threadParams[1]));
     if (rc < 0)
-        perror("pthread_create for service 2 - flash frame storage");
+        perror("pthread_create for service 2 - flash frame process");
     else
         printf("pthread_create successful for service 2\n");
 
@@ -373,7 +374,7 @@ void main(void)
     pthread_attr_setschedparam(&rt_sched_attr[3], &rt_param[3]);
     rc = pthread_create(&threads[3], &rt_sched_attr[3], Service_5_frame_filter, (void *)&(threadParams[3]));
     if (rc < 0)
-        perror("pthread_create for service 5 - flash frame storage");
+        perror("pthread_create for service 5 - filter frame");
     else
         printf("pthread_create successful for service 5\n");
 
@@ -399,7 +400,7 @@ void main(void)
     pthread_attr_setaffinity_np(&key_read_attr, sizeof(cpu_set_t), &viewercpu);
 
     threadParams_key_reader.threadIdx = (sizeof(threadParams) / sizeof(threadParams[0])) + 2; /* index after last RT service thread and viewer thread */
-    rc = pthread_create(&viewer_thread, &key_read_attr,
+    rc = pthread_create(&key_reader_thread, &key_read_attr,
                         Service_6_keyboard_reader, (void *)&(threadParams_key_reader));
     if (rc < 0)
         perror("pthread_create for service 6 - keyboard reader");
@@ -532,7 +533,7 @@ void *Service_1_frame_acquisition(void *threadp)
     double current_realtime;
     unsigned long long S1Cnt = 0;
     threadParams_t *threadParams = (threadParams_t *)threadp;
-    printf("Frame acquisitation thread running on CPU=%d \n", sched_getcpu());
+    printf("\nFrame acquisitation thread running on CPU=%d \n", sched_getcpu());
     // Start up processing and resource initialization
     clock_gettime(MY_CLOCK_TYPE, &current_time_val);
     current_realtime = realtime(&current_time_val);
@@ -574,7 +575,7 @@ void *Service_2_frame_process(void *threadp)
     unsigned long long S2Cnt = 0;
     int process_cnt;
     threadParams_t *threadParams = (threadParams_t *)threadp;
-    printf("Frame processing thread running on CPU=%d \n", sched_getcpu());
+    printf("\nFrame processing thread running on CPU=%d \n", sched_getcpu());
     clock_gettime(MY_CLOCK_TYPE, &current_time_val);
     current_realtime = realtime(&current_time_val);
     syslog(LOG_CRIT, "S2 thread @ sec=%6.9lf\n", current_realtime - start_realtime);
@@ -607,7 +608,7 @@ void *Service_3_frame_storage(void *threadp)
     unsigned long long S3Cnt = 0;
     int store_cnt;
     threadParams_t *threadParams = (threadParams_t *)threadp;
-    printf("Frame storage thread running on CPU=%d \n", sched_getcpu());
+    printf("\nFrame storage thread running on CPU=%d \n", sched_getcpu());
     clock_gettime(MY_CLOCK_TYPE, &current_time_val);
     current_realtime = realtime(&current_time_val);
     syslog(LOG_CRIT, "S3 thread @ sec=%6.9lf\n", current_realtime - start_realtime);
@@ -649,7 +650,7 @@ void *Service_5_frame_filter(void *threadp)
     unsigned long long S5Cnt = 0;
     int filter_cnt = 0;
     threadParams_t *threadParams = (threadParams_t *)threadp;
-    printf("Frame filter thread running on CPU=%d \n", sched_getcpu());
+    printf("\nFrame filter thread running on CPU=%d \n", sched_getcpu());
     clock_gettime(MY_CLOCK_TYPE, &current_time_val);
     current_realtime = realtime(&current_time_val);
     syslog(LOG_CRIT, "S5 thread @ sec=%6.9lf\n", current_realtime - start_realtime);
@@ -872,18 +873,18 @@ void *Service_4_frame_display(void *threadp)
 
 void *Service_6_keyboard_reader(void *threadp)
 {
-    struct termios orig_termios, raw_termios;
+    struct termios orig_termios, raw_termios;  // for non-blocking keyboard input
     fd_set readfds;
     struct timeval timeout;
     char ch;
     int rv;
-
-    tcgetattr(STDIN_FILENO, &orig_termios);
-    raw_termios = orig_termios;
-    raw_termios.c_lflag &= ~(ICANON | ECHO);
-    raw_termios.c_cc[VMIN] = 0;
-    raw_termios.c_cc[VTIME] = 0;
-    tcsetattr(STDIN_FILENO, TCSANOW, &raw_termios);
+    printf("\nKeyboard Reader thread running on CPU=%d \n", sched_getcpu());
+    tcgetattr(STDIN_FILENO, &orig_termios);  // get current terminal settings
+    raw_termios = orig_termios;              // modify for raw input: non-canonical mode, no echo, and non-blocking read
+    raw_termios.c_lflag &= ~(ICANON | ECHO); // disable canonical mode and echo
+    raw_termios.c_cc[VMIN] = 0;              // return immediately from read() if no input
+    raw_termios.c_cc[VTIME] = 0;             // no blocking timeout — we will use select() for timing instead
+    tcsetattr(STDIN_FILENO, TCSANOW, &raw_termios);  // apply raw settings immediately
 
     while (!abortTest)
     {
@@ -893,14 +894,14 @@ void *Service_6_keyboard_reader(void *threadp)
         timeout.tv_sec = 0;
         timeout.tv_usec = 1000000; // 1000 ms poll period — reset every iteration
 
-        rv = select(STDIN_FILENO + 1, &readfds, NULL, NULL, &timeout);
+        rv = select(STDIN_FILENO + 1, &readfds, NULL, NULL, &timeout);  // wait for input or timeout
 
         if (rv > 0 && FD_ISSET(STDIN_FILENO, &readfds))
         {
             if (ch == 's' || ch == 'S' || ch == 'r' || ch == 'R')
             {
                 union sigval sv = {.sival_int = (int)ch};
-                sigqueue(getpid(), SIGRTMIN + 1, sv);
+                sigqueue(getpid(), SIGRTMIN + 1, sv);  // send signal to self to request filter skip or resume
             }
             // any other key: just ignore it, no abort
             else
