@@ -35,6 +35,7 @@
 #include <signal.h>
 #include <stdatomic.h>
 #include <termios.h> // for keyboard input without blocking
+#include <sys/utsname.h> // for uname
 
 #define USEC_PER_MSEC (1000)
 #define NANOSEC_PER_MSEC (1000000)
@@ -45,6 +46,8 @@
 
 #define SEQ_CORE (1)
 #define RT_CORE (2)
+
+
 
 #define NUM_THREADS (5) /* number of service threads, not including viewer thread */
 
@@ -165,6 +168,16 @@ void main(void)
     threadParams_t threadParams[NUM_THREADS];
     pthread_attr_t rt_sched_attr[NUM_THREADS];
     int rt_max_prio, rt_min_prio, cpuidx;
+
+    struct utsname uts;
+    char uname_buf[512];
+    // open connection to syslog with specified options and facility.
+    // LOG_CONS: write to console if syslog is not available, LOG_PERROR: also print to stderr, LOG_LOCAL1: use local1 facility
+    openlog("seqv4l2", LOG_CONS | LOG_PERROR, LOG_LOCAL1);
+    uname(&uts); // syscall to get system information and fill the uts structure
+    snprintf(uname_buf, sizeof(uname_buf), "%s %s %s %s %s GNU/Linux",
+             uts.sysname, uts.nodename, uts.release, uts.version, uts.machine); // pre-build string with system info 
+    syslog(LOG_CRIT,  uname_buf);                // open a connection to the system logger for logging messages related to this program
 
 #if VIEWER_ENABLE
     pthread_t viewer_thread;
@@ -555,7 +568,7 @@ void *Service_1_frame_acquisition(void *threadp)
         // on order of up to milliseconds of latency to get time
         clock_gettime(MY_CLOCK_TYPE, &current_time_val);
         current_realtime = realtime(&current_time_val);
-        syslog(LOG_CRIT, "S1 at 25 Hz on core %d for release %llu @ sec=%6.9lf\n", sched_getcpu(), S1Cnt, current_realtime - start_realtime);
+        syslog(LOG_CRIT, "S1 at 5 Hz on core %d for release %llu @ sec=%6.9lf\n", sched_getcpu(), S1Cnt, current_realtime - start_realtime);
 
         if (S1Cnt > 250)
         {
@@ -743,7 +756,7 @@ void *Service_4_frame_display(void *threadp)
     char title[80];
     SDL_Event ev;
     int xpos = 0;
-
+    printf("\nFrame display thread running on CPU=%d \n", sched_getcpu());
     static unsigned char curr_rgb[VIEWER_WIN_W * VIEWER_WIN_H * 3];
     static unsigned char prev_rgb[VIEWER_WIN_W * VIEWER_WIN_H * 3];
     static unsigned char diff_buf[VIEWER_WIN_W * VIEWER_WIN_H * 3];
@@ -789,7 +802,7 @@ void *Service_4_frame_display(void *threadp)
     clock_gettime(MY_CLOCK_TYPE, &current_time_val);
     current_realtime = realtime(&current_time_val);
     syslog(LOG_CRIT, "S4 thread @ sec=%6.9lf\n", current_realtime - start_realtime);
-    printf("S4 thread @ sec=%6.9lf\n", current_realtime - start_realtime);
+    //printf("S4 thread @ sec=%6.9lf\n", current_realtime - start_realtime);
 
     while (!abortS4)
     {
@@ -856,8 +869,8 @@ void *Service_4_frame_display(void *threadp)
 
         clock_gettime(MY_CLOCK_TYPE, &current_time_val);
         current_realtime = realtime(&current_time_val);
-        syslog(LOG_CRIT, "S4 display on core %d for release %llu @ sec=%6.9lf\n",
-               sched_getcpu(), S4Cnt, current_realtime - start_realtime);
+        // syslog(LOG_CRIT, "S4 display on core %d for release %llu @ sec=%6.9lf\n", sched_getcpu(), S4Cnt, current_realtime - start_realtime);
+               
     }
 
     for (i = 0; i < nwins; i++)

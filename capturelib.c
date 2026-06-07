@@ -74,6 +74,12 @@
 #define ACQ_FRAMES_STORED_PER_FPS (5) // input ring buffer size should be large enough to hold at least 5 frames for each frame per second rate that we want to support, so that we can have a good chance of not losing frames while we are processing and saving frames, but also not so large that we are wasting a lot of memory on the ring buffer
 #define DRIVER_MMAP_BUFFERS (6)       // request buffers for delay
 #define RING_OUTPUT_BUFFER_SIZE (FRAMES_PER_SEC + 3)
+
+// adjacent string literals are concatenated at compile time, so we can use this to build our log message format string
+#define COURSE_FRM_CAPT_SYSLOG(crs, nmb) "[COURSE " crs "][" nmb "][Frame Count: %d][Image Capture Start Time: %lf seconds]"
+#define COURSE "#:4"
+#define ASS "Final Project"
+
 // Format is used by a number of functions, so made as a file global
 static struct v4l2_format fmt;
 struct v4l2_buffer frame_buf;
@@ -312,7 +318,7 @@ static int save_image(const void *p, int size, struct timespec *frame_time)
     unsigned char *frame_ptr = (unsigned char *)p;
 
     save_framecnt++;
-    printf("save frame %d: \n", save_framecnt);
+    syslog(LOG_CRIT,"save frame %d: \n", save_framecnt);
 
 #ifdef DUMP_FRAMES
 
@@ -362,7 +368,7 @@ static int process_image(const void *p, int size)
     unsigned char *frame_ptr = (unsigned char *)p;
 
     process_framecnt++;
-    printf("process frame %d: \n", process_framecnt);
+    syslog(LOG_CRIT,"process frame %d: \n", process_framecnt);
 
     if (fmt.fmt.pix.pixelformat == V4L2_PIX_FMT_GREY)
     {
@@ -572,7 +578,7 @@ int seq_frame_read(void)
     if (read_framecnt > 0)
     {
         ring_buffer.save_frame[curr_frame_idx].time_stamp = time_now;
-        printf("Acquisitation: read_framecnt=%d, rb.tail=%d, rb.head=%d, rb.count=%d at %lf and %lf FPS.\n", read_framecnt, ring_buffer.tail_idx, ring_buffer.head_idx, ring_buffer.count, (fnow - fstart), (double)(read_framecnt) / (fnow - fstart));
+        // printf("Acquisitation: read_framecnt=%d, rb.tail=%d, rb.head=%d, rb.count=%d at %lf and %lf FPS.\n", read_framecnt, ring_buffer.tail_idx, ring_buffer.head_idx, ring_buffer.count, (fnow - fstart), (double)(read_framecnt) / (fnow - fstart));
        
         // syslog(LOG_CRIT, "read_framecnt=%d, rb.tail=%d, rb.head=%d, rb.count=%d at %lf and %lf FPS", read_framecnt, ring_buffer.tail_idx, ring_buffer.head_idx, ring_buffer.count, (fnow-fstart), (double)(read_framecnt) / (fnow-fstart));
         syslog(LOG_CRIT, "read_framecnt=%d at %lf and %lf FPS", read_framecnt, (fnow - fstart), (double)(read_framecnt) / (fnow - fstart));
@@ -582,7 +588,7 @@ int seq_frame_read(void)
         printf("at %lf\n", fnow);
     }
 
-    printf("--Acquisitation read frame at: %lf\n", (fnow - read_start));
+    // printf("--Acquisitation read frame at: %lf\n", (fnow - read_start));
 
     if (read_framecnt > FRAMES_TO_SKIP)
     {
@@ -600,7 +606,7 @@ int seq_frame_read(void)
         if (frame_diff_pers > 0.35)
         {
             ring_buffer.save_frame[curr_frame_idx].is_different_from_previous = true;
-            printf("Frame at tail of ring buffer %d is not the same as previous frame, marked.\n", curr_frame_idx);
+            syslog(LOG_CRIT, "Frame at tail of ring buffer %d is not the same as previous frame, marked.\n", curr_frame_idx);
             if (ring_buffer.count > 2)
             {
                 ring_buffer.save_frame[curr_frame_idx - 2].is_selected_to_save = true;
@@ -610,11 +616,11 @@ int seq_frame_read(void)
         else
         {
             ring_buffer.save_frame[curr_frame_idx].is_different_from_previous = false;
-            printf("Frame at tail of ring buffer %d is the same as previous frame, not marked.\n", curr_frame_idx);
+            syslog(LOG_CRIT, "Frame at tail of ring buffer %d is the same as previous frame, not marked.\n", curr_frame_idx);
         }
         clock_gettime(CLOCK_MONOTONIC, &sel_ts_now);
         sel_now = (double)sel_ts_now.tv_sec + (double)sel_ts_now.tv_nsec / 1000000000.0;
-        printf(" Selection: read_framecnt=%d, rb.tail=%d, rb.head=%d, rb.count=%d at %lf and %lf FPS.\n", read_framecnt, ring_buffer.tail_idx, ring_buffer.head_idx, ring_buffer.count, (sel_now - sel_start), (double)(read_framecnt) / (sel_now - fstart));
+        // printf(" Selection: read_framecnt=%d, rb.tail=%d, rb.head=%d, rb.count=%d at %lf and %lf FPS.\n", read_framecnt, ring_buffer.tail_idx, ring_buffer.head_idx, ring_buffer.count, (sel_now - sel_start), (double)(read_framecnt) / (sel_now - fstart));
     }
     return read_framecnt;
 }
@@ -681,12 +687,14 @@ int seq_frame_store(void)
 
             ring_output_buffer.head_idx = (ring_output_buffer.head_idx + 1) % ring_output_buffer.ring_size;
 
-            printf("save_framecnt=%d ", save_framecnt);
+            //printf("save_framecnt=%d ", save_framecnt);
 
             clock_gettime(CLOCK_MONOTONIC, &time_now);
             fnow = (double)time_now.tv_sec + (double)time_now.tv_nsec / 1000000000.0;
-            printf(" saved at %lf, @ %lf FPS\n", (fnow - fstart), (double)(save_framecnt) / (fnow - fstart));
-            printf("---Saving time for this frame: %lf\n", (fnow - store_start));
+            syslog(LOG_CRIT, COURSE_FRM_CAPT_SYSLOG(COURSE, ASS), save_framecnt, (fnow - fstart));
+            syslog(LOG_CRIT, "save_framecnt=%d at %lf and %lf FPS", save_framecnt, (fnow - fstart), (double)(save_framecnt) / (fnow - fstart));
+            //printf(" saved at %lf, @ %lf FPS\n", (fnow - fstart), (double)(save_framecnt) / (fnow - fstart));
+            //printf("---Saving time for this frame: %lf\n", (fnow - store_start));
         }
     }
     else
@@ -714,7 +722,7 @@ int seq_frame_filter(void)
         filter_framecnt++;
         clock_gettime(CLOCK_MONOTONIC, &time_now);
         fnow = (double)time_now.tv_sec + (double)time_now.tv_nsec / 1000000000.0;
-        printf(" filtered at %lf, @ %lf FPS\n", (fnow - fstart), (double)(filter_framecnt) / (fnow - fstart));
+        syslog(LOG_CRIT, " filtered at %lf, @ %lf FPS\n", (fnow - fstart), (double)(filter_framecnt) / (fnow - fstart));
     }
 
     return filter_framecnt;
