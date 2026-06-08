@@ -165,7 +165,7 @@ static int xioctl(int fh, int request, void *arg)
 }
 
 char ppm_header[] = "P6\n#9999999999 sec 9999999999 msec \n" HRES_STR " " VRES_STR "\n255\n";
-char ppm_dumpname[] = "frames/test0000.ppm";
+char ppm_dumpname[] = "frames/Time-0000.ppm";
 
 // forward declarations for functions used in the main loop that are defined after it
 unsigned int frame_diff_yuyv(const unsigned char *prev,
@@ -202,13 +202,13 @@ static void dump_ppm(const void *p, int size, unsigned int tag, struct timespec 
 
     clock_gettime(CLOCK_MONOTONIC, &time_now);
     fnow = (double)time_now.tv_sec + (double)time_now.tv_nsec / 1000000000.0;
-    printf("Frame written to flash at %lf, %d, bytes\n", (fnow - fstart), total);
+    // syslog(LOG_CRIT, "Frame written to flash at %lf, %d, bytes\n", (fnow - fstart), total);
 
     close(dumpfd);
 }
 
 char pgm_header[] = "P5\n#9999999999 sec 9999999999 msec \n" HRES_STR " " VRES_STR "\n255\n";
-char pgm_dumpname[] = "frames/test0000.pgm";
+char pgm_dumpname[] = "frames/Time-0000.pgm";
 
 static void dump_pgm(const void *p, int size, unsigned int tag, struct timespec *time)
 {
@@ -236,7 +236,7 @@ static void dump_pgm(const void *p, int size, unsigned int tag, struct timespec 
 
     clock_gettime(CLOCK_MONOTONIC, &time_now);
     fnow = (double)time_now.tv_sec + (double)time_now.tv_nsec / 1000000000.0;
-    printf("Frame written to flash at %lf, %d, bytes\n", (fnow - fstart), total);
+    // syslog(LOG_CRIT, "Frame written to flash at %lf, %d, bytes\n", (fnow - fstart), total);
 
     close(dumpfd);
 }
@@ -318,13 +318,13 @@ static int save_image(const void *p, int size, struct timespec *frame_time)
     unsigned char *frame_ptr = (unsigned char *)p;
 
     save_framecnt++;
-    syslog(LOG_CRIT,"save frame %d: \n", save_framecnt);
+    // syslog(LOG_CRIT,"save frame %d: \n", save_framecnt);
 
 #ifdef DUMP_FRAMES
 
     if (fmt.fmt.pix.pixelformat == V4L2_PIX_FMT_GREY)
     {
-        printf("Dump graymap as-is size %d\n", size);
+        //syslog(LOG_CRIT, "Dump graymap as-is size %d\n", size);
         dump_pgm(frame_ptr, size, save_framecnt, frame_time);
     }
 
@@ -336,7 +336,7 @@ static int save_image(const void *p, int size, struct timespec *frame_time)
         if (save_framecnt > 0)
         {
             dump_ppm(frame_ptr, ((size * 6) / 4), save_framecnt, frame_time);
-            printf("Dump YUYV converted to RGB size %d\n", size);
+            // syslog(LOG_CRIT, "Dump YUYV converted to RGB size %d\n", size);
         }
 #elif defined(COLOR_CONVERT_GRAY)
         if (save_framecnt > 0)
@@ -349,7 +349,7 @@ static int save_image(const void *p, int size, struct timespec *frame_time)
 
     else if (fmt.fmt.pix.pixelformat == V4L2_PIX_FMT_RGB24)
     {
-        printf("Dump RGB as-is size %d\n", size);
+        // printf("Dump RGB as-is size %d\n", size);
         dump_ppm(frame_ptr, size, process_framecnt, frame_time);
     }
     else
@@ -368,7 +368,7 @@ static int process_image(const void *p, int size)
     unsigned char *frame_ptr = (unsigned char *)p;
 
     process_framecnt++;
-    syslog(LOG_CRIT,"process frame %d: \n", process_framecnt);
+    // syslog(LOG_CRIT,"process frame %d: \n", process_framecnt);
 
     if (fmt.fmt.pix.pixelformat == V4L2_PIX_FMT_GREY)
     {
@@ -581,7 +581,7 @@ int seq_frame_read(void)
         // printf("Acquisitation: read_framecnt=%d, rb.tail=%d, rb.head=%d, rb.count=%d at %lf and %lf FPS.\n", read_framecnt, ring_buffer.tail_idx, ring_buffer.head_idx, ring_buffer.count, (fnow - fstart), (double)(read_framecnt) / (fnow - fstart));
        
         // syslog(LOG_CRIT, "read_framecnt=%d, rb.tail=%d, rb.head=%d, rb.count=%d at %lf and %lf FPS", read_framecnt, ring_buffer.tail_idx, ring_buffer.head_idx, ring_buffer.count, (fnow-fstart), (double)(read_framecnt) / (fnow-fstart));
-        syslog(LOG_CRIT, "read_framecnt=%d at %lf and %lf FPS", read_framecnt, (fnow - fstart), (double)(read_framecnt) / (fnow - fstart));
+        // syslog(LOG_CRIT, "read_framecnt=%d at %lf and %lf FPS", read_framecnt, (fnow - fstart), (double)(read_framecnt) / (fnow - fstart));
     }
     else
     {
@@ -631,7 +631,7 @@ int seq_frame_process(void)
     struct timespec proc_ts_start, proc_ts_now;
     double proc_start, proc_now;
 
-    printf("processing rb.tail=%d, rb.head=%d, rb.count=%d\n", ring_buffer.tail_idx, ring_buffer.head_idx, ring_buffer.count);
+    //syslog(LOG_CRIT, "processing rb.tail=%d, rb.head=%d, rb.count=%d\n", ring_buffer.tail_idx, ring_buffer.head_idx, ring_buffer.count);
 
     ring_buffer.head_idx = (ring_buffer.head_idx + 2) % ring_buffer.ring_size;
 
@@ -648,14 +648,14 @@ int seq_frame_process(void)
     ring_buffer.head_idx = (ring_buffer.head_idx + 3) % ring_buffer.ring_size; // advance head index by 5 to simulate processing delay, which should cause the ring buffer count to increase by 5, and then we will subtract 5 from the count to simulate that those frames have been processed and are no longer in the ring buffer
     ring_buffer.count = ring_buffer.count - 5;
 
-    printf("rb.tail=%d, rb.head=%d, rb.count=%d ", ring_buffer.tail_idx, ring_buffer.head_idx, ring_buffer.count);
+    //syslog(LOG_CRIT, "rb.tail=%d, rb.head=%d, rb.count=%d ", ring_buffer.tail_idx, ring_buffer.head_idx, ring_buffer.count);
 
     if (process_framecnt > 0)
     {
         clock_gettime(CLOCK_MONOTONIC, &time_now);
         fnow = (double)time_now.tv_sec + (double)time_now.tv_nsec / 1000000000.0;
-        printf(" processed at %lf, @ %lf FPS\n", (fnow - fstart), (double)(process_framecnt) / (fnow - fstart));
-        printf("---Processing time for this frame: %lf\n", (fnow - proc_start));
+        //syslog(LOG_CRIT, " processed at %lf, @ %lf FPS\n", (fnow - fstart), (double)(process_framecnt) / (fnow - fstart));
+        //syslog(LOG_CRIT, "---Processing time for this frame: %lf\n", (fnow - proc_start));
     }
     else
     {
@@ -692,7 +692,7 @@ int seq_frame_store(void)
             clock_gettime(CLOCK_MONOTONIC, &time_now);
             fnow = (double)time_now.tv_sec + (double)time_now.tv_nsec / 1000000000.0;
             syslog(LOG_CRIT, COURSE_FRM_CAPT_SYSLOG(COURSE, ASS), save_framecnt, (fnow - fstart));
-            syslog(LOG_CRIT, "save_framecnt=%d at %lf and %lf FPS", save_framecnt, (fnow - fstart), (double)(save_framecnt) / (fnow - fstart));
+            // syslog(LOG_CRIT, "save_framecnt=%d at %lf and %lf FPS", save_framecnt, (fnow - fstart), (double)(save_framecnt) / (fnow - fstart));
             //printf(" saved at %lf, @ %lf FPS\n", (fnow - fstart), (double)(save_framecnt) / (fnow - fstart));
             //printf("---Saving time for this frame: %lf\n", (fnow - store_start));
         }
@@ -718,11 +718,11 @@ int seq_frame_filter(void)
         apply_filter((void *)&(ring_output_buffer.save_out_frame[ring_output_buffer.head_idx].frame[0]), HRES * VRES * PIXEL_SIZE * 3);
         ring_output_buffer.save_out_frame[ring_output_buffer.head_idx].is_filter_applied = true;
         
-        printf("Processed and saved %d frame from output ring buffer \n", save_framecnt);
+        // syslog(LOG_CRIT, "Saved %d frame from output ring buffer processing by filter \n", save_framecnt);
         filter_framecnt++;
         clock_gettime(CLOCK_MONOTONIC, &time_now);
         fnow = (double)time_now.tv_sec + (double)time_now.tv_nsec / 1000000000.0;
-        syslog(LOG_CRIT, " filtered at %lf, @ %lf FPS\n", (fnow - fstart), (double)(filter_framecnt) / (fnow - fstart));
+        // syslog(LOG_CRIT, " filtered at %lf, @ %lf FPS\n", (fnow - fstart), (double)(filter_framecnt) / (fnow - fstart));
     }
 
     return filter_framecnt;
@@ -812,7 +812,7 @@ static void mainloop(void)
                         printf(" read at %lf, @ %lf FPS\n", (fnow - fstart), (double)(read_framecnt) / (fnow - fstart));
 
                         memcpy((void *)&(ring_buffer.save_frame[ring_buffer.tail_idx].frame[0]), buffers[frame_buf.index].start, frame_buf.bytesused);
-                        printf("memcpy to rb.tail=%d, rb.head=%d, ptr=%p\n", ring_buffer.tail_idx, ring_buffer.head_idx, (void *)&(ring_buffer.save_frame[ring_buffer.tail_idx].frame[0]));
+                        //syslog(LOG_CRIT, "memcpy to rb.tail=%d, rb.head=%d, ptr=%p\n", ring_buffer.tail_idx, ring_buffer.head_idx, (void *)&(ring_buffer.save_frame[ring_buffer.tail_idx].frame[0]));
 
                         // advance ring buffer for next read
                         ring_buffer.tail_idx = (ring_buffer.tail_idx + 1) % ring_buffer.ring_size;

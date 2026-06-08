@@ -19,6 +19,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 #include <stdbool.h>
 
@@ -34,7 +35,7 @@
 #include <sys/mman.h> // for mlockall
 #include <signal.h>
 #include <stdatomic.h>
-#include <termios.h> // for keyboard input without blocking
+#include <termios.h>     // for keyboard input without blocking
 #include <sys/utsname.h> // for uname
 
 #define USEC_PER_MSEC (1000)
@@ -47,9 +48,7 @@
 #define SEQ_CORE (1)
 #define RT_CORE (2)
 
-
-
-#define NUM_THREADS (5) /* number of service threads, not including viewer thread */
+#define NUM_THREADS (4) /* number of service threads, not including viewer thread and key read thread */
 
 // Of the available user space clocks, CLOCK_MONONTONIC_RAW is typically most precise and not subject to
 // updates from external timer adjustments
@@ -137,17 +136,20 @@ static void skip_filter_handler(int sig, siginfo_t *si, void *ctx)
 {
     int key = si->si_value.sival_int;
     switch (key)
-    {    case 's':
-         case 'S':
-            atomic_store_explicit(&skip_filter_requested, 1, memory_order_relaxed);;
-            break;
-        case 'r':
-        case 'R':
-            atomic_store_explicit(&skip_filter_requested, 0, memory_order_relaxed);;
-            break;  
-        default:
-            printf("Received unknown signal with key %d\n", key);
-            return;
+    {
+    case 's':
+    case 'S':
+        atomic_store_explicit(&skip_filter_requested, 1, memory_order_relaxed);
+        ;
+        break;
+    case 'r':
+    case 'R':
+        atomic_store_explicit(&skip_filter_requested, 0, memory_order_relaxed);
+        ;
+        break;
+    default:
+        printf("Received unknown signal with key %d\n", key);
+        return;
     }
 }
 
@@ -176,8 +178,8 @@ void main(void)
     openlog("seqv4l2", LOG_CONS | LOG_PERROR, LOG_LOCAL1);
     uname(&uts); // syscall to get system information and fill the uts structure
     snprintf(uname_buf, sizeof(uname_buf), "%s %s %s %s %s GNU/Linux",
-             uts.sysname, uts.nodename, uts.release, uts.version, uts.machine); // pre-build string with system info 
-    syslog(LOG_CRIT,  uname_buf);                // open a connection to the system logger for logging messages related to this program
+             uts.sysname, uts.nodename, uts.release, uts.version, uts.machine); // pre-build string with system info
+    syslog(LOG_CRIT, uname_buf);                                                // open a connection to the system logger for logging messages related to this program
 
 #if VIEWER_ENABLE
     pthread_t viewer_thread;
@@ -295,8 +297,8 @@ void main(void)
         CPU_ZERO(&threadcpu);
         cpuidx = (RT_CORE);
         CPU_SET(cpuidx, &threadcpu);
-        if(i == 0)
-        printf("Service threads will run on %d CPU cores\n", CPU_COUNT(&threadcpu));
+        if (i == 0)
+            printf("Service threads will run on %d CPU cores\n", CPU_COUNT(&threadcpu));
 
         rc = pthread_attr_init(&rt_sched_attr[i]);
         rc = pthread_attr_setinheritsched(&rt_sched_attr[i], PTHREAD_EXPLICIT_SCHED);
@@ -404,6 +406,7 @@ void main(void)
     struct sched_param key_read_param;
     cpu_set_t viewercpu;
 
+    key_read_param.sched_priority = 0;
     pthread_attr_init(&key_read_attr);
     pthread_attr_setinheritsched(&key_read_attr, PTHREAD_EXPLICIT_SCHED);
     pthread_attr_setschedpolicy(&key_read_attr, SCHED_OTHER);
@@ -415,8 +418,8 @@ void main(void)
     threadParams_key_reader.threadIdx = (sizeof(threadParams) / sizeof(threadParams[0])) + 2; /* index after last RT service thread and viewer thread */
     rc = pthread_create(&key_reader_thread, &key_read_attr,
                         Service_6_keyboard_reader, (void *)&(threadParams_key_reader));
-    if (rc < 0)
-        perror("pthread_create for service 6 - keyboard reader");
+    if (rc != 0)
+        fprintf(stderr, "pthread_create for service 6 - keyboard reader: %s\n", strerror(rc));
     else
         printf("pthread_create successful for service 6\n");
 
@@ -454,6 +457,12 @@ void main(void)
         else
             printf("joined thread %d\n", i);
     }
+
+    if ((rc = pthread_create(&key_reader_thread, &key_read_attr,
+                             Service_6_keyboard_reader, (void *)&(threadParams_key_reader))) != 0)
+        fprintf(stderr, "pthread_create for service 6 - keyboard reader: %s\n", strerror(rc));
+    else
+        printf("pthread_create successful for service 6\n");
 
 #if VIEWER_ENABLE
     if ((rc = pthread_join(viewer_thread, NULL)) < 0)
@@ -568,7 +577,7 @@ void *Service_1_frame_acquisition(void *threadp)
         // on order of up to milliseconds of latency to get time
         clock_gettime(MY_CLOCK_TYPE, &current_time_val);
         current_realtime = realtime(&current_time_val);
-        syslog(LOG_CRIT, "S1 at 5 Hz on core %d for release %llu @ sec=%6.9lf\n", sched_getcpu(), S1Cnt, current_realtime - start_realtime);
+        // syslog(LOG_CRIT, "S1 at 5 Hz on core %d for release %llu @ sec=%6.9lf\n", sched_getcpu(), S1Cnt, current_realtime - start_realtime);
 
         if (S1Cnt > 250)
         {
@@ -608,7 +617,7 @@ void *Service_2_frame_process(void *threadp)
 
         clock_gettime(MY_CLOCK_TYPE, &current_time_val);
         current_realtime = realtime(&current_time_val);
-        syslog(LOG_CRIT, "S2 at 1 Hz on core %d for release %llu @ sec=%6.9lf\n", sched_getcpu(), S2Cnt, current_realtime - start_realtime);
+        // syslog(LOG_CRIT, "S2 at 1 Hz on core %d for release %llu @ sec=%6.9lf\n", sched_getcpu(), S2Cnt, current_realtime - start_realtime);
     }
 
     pthread_exit((void *)0);
@@ -640,7 +649,7 @@ void *Service_3_frame_storage(void *threadp)
 
         clock_gettime(MY_CLOCK_TYPE, &current_time_val);
         current_realtime = realtime(&current_time_val);
-        syslog(LOG_CRIT, "S3 at 1 Hz on core %d for release %llu @ sec=%6.9lf\n", sched_getcpu(), S3Cnt, current_realtime - start_realtime);
+        // syslog(LOG_CRIT, "S3 at 1 Hz on core %d for release %llu @ sec=%6.9lf\n", sched_getcpu(), S3Cnt, current_realtime - start_realtime);
 
         // after last write, set synchronous abort
         if (store_cnt == 10)
@@ -679,7 +688,7 @@ void *Service_5_frame_filter(void *threadp)
 
         // DO WORK - apply filter to frame
         // filter_cnt = seq_frame_filter();
-        if (skip_filter_requested > 0) 
+        if (skip_filter_requested > 0)
         {
             printf("S5: skipping filter work this cycle (user request)\n");
         }
@@ -690,7 +699,7 @@ void *Service_5_frame_filter(void *threadp)
 
         clock_gettime(MY_CLOCK_TYPE, &current_time_val);
         current_realtime = realtime(&current_time_val);
-        syslog(LOG_CRIT, "S5 at 1 Hz on core %d for release %llu @ sec=%6.9lf\n", sched_getcpu(), S5Cnt, current_realtime - start_realtime);
+        // syslog(LOG_CRIT, "S5 at 1 Hz on core %d for release %llu @ sec=%6.9lf\n", sched_getcpu(), S5Cnt, current_realtime - start_realtime);
 
         // after last write, set synchronous abort
         if (filter_cnt == 181)
@@ -801,8 +810,8 @@ void *Service_4_frame_display(void *threadp)
 
     clock_gettime(MY_CLOCK_TYPE, &current_time_val);
     current_realtime = realtime(&current_time_val);
-    syslog(LOG_CRIT, "S4 thread @ sec=%6.9lf\n", current_realtime - start_realtime);
-    //printf("S4 thread @ sec=%6.9lf\n", current_realtime - start_realtime);
+    // syslog(LOG_CRIT, "S4 thread @ sec=%6.9lf\n", current_realtime - start_realtime);
+    // printf("S4 thread @ sec=%6.9lf\n", current_realtime - start_realtime);
 
     while (!abortS4)
     {
@@ -870,7 +879,6 @@ void *Service_4_frame_display(void *threadp)
         clock_gettime(MY_CLOCK_TYPE, &current_time_val);
         current_realtime = realtime(&current_time_val);
         // syslog(LOG_CRIT, "S4 display on core %d for release %llu @ sec=%6.9lf\n", sched_getcpu(), S4Cnt, current_realtime - start_realtime);
-               
     }
 
     for (i = 0; i < nwins; i++)
@@ -886,18 +894,18 @@ void *Service_4_frame_display(void *threadp)
 
 void *Service_6_keyboard_reader(void *threadp)
 {
-    struct termios orig_termios, raw_termios;  // for non-blocking keyboard input
+    struct termios orig_termios, raw_termios; // for non-blocking keyboard input
     fd_set readfds;
     struct timeval timeout;
     char ch;
     int rv;
     printf("\nKeyboard Reader thread running on CPU=%d \n", sched_getcpu());
-    tcgetattr(STDIN_FILENO, &orig_termios);  // get current terminal settings
-    raw_termios = orig_termios;              // modify for raw input: non-canonical mode, no echo, and non-blocking read
-    raw_termios.c_lflag &= ~(ICANON | ECHO); // disable canonical mode and echo
-    raw_termios.c_cc[VMIN] = 0;              // return immediately from read() if no input
-    raw_termios.c_cc[VTIME] = 0;             // no blocking timeout — we will use select() for timing instead
-    tcsetattr(STDIN_FILENO, TCSANOW, &raw_termios);  // apply raw settings immediately
+    tcgetattr(STDIN_FILENO, &orig_termios);         // get current terminal settings
+    raw_termios = orig_termios;                     // modify for raw input: non-canonical mode, no echo, and non-blocking read
+    raw_termios.c_lflag &= ~(ICANON | ECHO);        // disable canonical mode and echo
+    raw_termios.c_cc[VMIN] = 0;                     // return immediately from read() if no input
+    raw_termios.c_cc[VTIME] = 0;                    // no blocking timeout — we will use select() for timing instead
+    tcsetattr(STDIN_FILENO, TCSANOW, &raw_termios); // apply raw settings immediately
 
     while (!abortTest)
     {
@@ -907,16 +915,19 @@ void *Service_6_keyboard_reader(void *threadp)
         timeout.tv_sec = 0;
         timeout.tv_usec = 1000000; // 1000 ms poll period — reset every iteration
 
-        rv = select(STDIN_FILENO + 1, &readfds, NULL, NULL, &timeout);  // wait for input or timeout
+        rv = select(STDIN_FILENO + 1, &readfds, NULL, NULL, &timeout); // wait for input or timeout
 
         if (rv > 0 && FD_ISSET(STDIN_FILENO, &readfds))
         {
-            if (ch == 's' || ch == 'S' || ch == 'r' || ch == 'R')
+            if (read(STDIN_FILENO, &ch, 1) == 1)
             {
-                union sigval sv = {.sival_int = (int)ch};
-                sigqueue(getpid(), SIGRTMIN + 1, sv);  // send signal to self to request filter skip or resume
+                if (ch == 's' || ch == 'S' || ch == 'r' || ch == 'R')
+                {
+                    union sigval sv = {.sival_int = (int)ch};
+                    sigqueue(getpid(), SIGRTMIN + 1, sv); // send signal to self to request filter skip or resume
+                }
+                // any other key: just ignore it, no abort
             }
-            // any other key: just ignore it, no abort
             else
             {
                 printf("Read error or EOF on stdin\n");
