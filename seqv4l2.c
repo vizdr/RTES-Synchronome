@@ -153,6 +153,13 @@ static void skip_filter_handler(int sig, siginfo_t *si, void *ctx)
     }
 }
 
+// called to avoid minor page fault
+static void stack_prefault(void)
+{
+    volatile unsigned char dummy[16384]; // touch 16 KB of stack depth
+    memset((void *)dummy, 0, sizeof(dummy));
+}
+
 void main(void)
 {
     struct timespec current_time_val, current_time_res;
@@ -216,7 +223,7 @@ void main(void)
     clock_getres(MY_CLOCK_TYPE, &current_time_res);
     current_realtime_res = realtime(&current_time_res);
 
-    syslog(LOG_CRIT, "START High Rate Sequencer @ sec=%6.9lf with resolution %6.9lf", (current_realtime - start_realtime), current_realtime_res);
+    //syslog(LOG_CRIT, "START High Rate Sequencer @ sec=%6.9lf with resolution %6.9lf", (current_realtime - start_realtime), current_realtime_res);
 
     printf("System has %d processors configured and %d available.\n", get_nprocs_conf(), get_nprocs());
 
@@ -559,7 +566,10 @@ void *Service_1_frame_acquisition(void *threadp)
     // Start up processing and resource initialization
     clock_gettime(MY_CLOCK_TYPE, &current_time_val);
     current_realtime = realtime(&current_time_val);
-    syslog(LOG_CRIT, "S1 thread @ sec=%6.9lf", current_realtime - start_realtime);
+    // syslog(LOG_CRIT, "S1 thread @ sec=%6.9lf", current_realtime - start_realtime);
+
+    // to avoid zero-fill allocation 
+    stack_prefault();
 
     while (!abortS1) // check for synchronous abort request
     {
@@ -599,8 +609,10 @@ void *Service_2_frame_process(void *threadp)
     printf("\nFrame processing thread running on CPU=%d \n", sched_getcpu());
     clock_gettime(MY_CLOCK_TYPE, &current_time_val);
     current_realtime = realtime(&current_time_val);
-    syslog(LOG_CRIT, "S2 thread @ sec=%6.9lf", current_realtime - start_realtime);
+    // syslog(LOG_CRIT, "S2 thread @ sec=%6.9lf", current_realtime - start_realtime);
 
+    // to avoid zero-fill allocation 
+    stack_prefault();
 
     while (!abortS2)
     {
@@ -632,8 +644,10 @@ void *Service_3_frame_storage(void *threadp)
     printf("\nFrame storage thread running on CPU=%d \n", sched_getcpu());
     clock_gettime(MY_CLOCK_TYPE, &current_time_val);
     current_realtime = realtime(&current_time_val);
-    syslog(LOG_CRIT, "S3 thread @ sec=%6.9lf\n", current_realtime - start_realtime);
+    // syslog(LOG_CRIT, "S3 thread @ sec=%6.9lf\n", current_realtime - start_realtime);
   
+    // to avoid zero-fill allocation 
+    stack_prefault();
 
     while (!abortS3)
     {
@@ -675,7 +689,10 @@ void *Service_5_frame_filter(void *threadp)
     printf("\nFrame filter thread running on CPU=%d \n", sched_getcpu());
     clock_gettime(MY_CLOCK_TYPE, &current_time_val);
     current_realtime = realtime(&current_time_val);
-    syslog(LOG_CRIT, "S5 thread @ sec=%6.9lf", current_realtime - start_realtime);
+    // syslog(LOG_CRIT, "S5 thread @ sec=%6.9lf", current_realtime - start_realtime);
+
+    // to avoid zero-fill allocation 
+    stack_prefault();
 
     while (!abortS5)
     {
@@ -696,7 +713,7 @@ void *Service_5_frame_filter(void *threadp)
             filter_cnt_prev = filter_cnt;
             filter_cnt = seq_frame_filter();
                 if (filter_cnt_prev == filter_cnt)
-                    syslog(LOG_CRIT, "S5: filter was not applied for release %llu, filter count %d", S5Cnt, filter_cnt);
+                    //syslog(LOG_CRIT, "S5: filter was not applied for release %llu, filter count %d", S5Cnt, filter_cnt);
         }
 
         clock_gettime(MY_CLOCK_TYPE, &current_time_val);

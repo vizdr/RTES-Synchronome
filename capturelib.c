@@ -621,8 +621,9 @@ int seq_frame_read(void)
 
                     ring_buffer.save_frame[curr_frame_idx].is_different_from_previous = false;
                     ring_buffer.save_frame[curr_frame_idx - 1].is_different_from_previous = false;
-                    syslog(LOG_CRIT, "Frame at index %d is selected to save, read counter: %d, prev read counter: %d", curr_frame_idx - 2, read_framecnt, prev_read_framecnt);
-
+                    // ***********************************************************************************
+                    // syslog(LOG_CRIT, "Frame at index %d is selected to save, read counter: %d, prev read counter: %d", curr_frame_idx - 2, read_framecnt, prev_read_framecnt);
+                    // ***********************************************************************************
                     prev_read_framecnt = read_framecnt;
                 }
             }
@@ -630,7 +631,9 @@ int seq_frame_read(void)
         else
         {
             ring_buffer.save_frame[curr_frame_idx].is_different_from_previous = false;
-            syslog(LOG_CRIT, "Frame at tail of ring buffer %d is the same as previous frame, not marked.\n", curr_frame_idx);
+            // **************************************************************************************************************
+            //syslog(LOG_CRIT, "Frame at tail of ring buffer %d is the same as previous frame, not marked.\n", curr_frame_idx);
+            // ************************************************************************************************************** 
         }
         clock_gettime(CLOCK_MONOTONIC, &sel_ts_now);
         sel_now = (double)sel_ts_now.tv_sec + (double)sel_ts_now.tv_nsec / 1000000000.0;
@@ -654,7 +657,9 @@ int seq_frame_process(void)
         clock_gettime(CLOCK_MONOTONIC, &proc_ts_start);
         proc_start = (double)proc_ts_start.tv_sec + (double)proc_ts_start.tv_nsec / 1000000000.0;
         cnt = process_image((void *)&(ring_buffer.save_frame[ring_buffer.head_idx].frame[0]), HRES * VRES * PIXEL_SIZE);
-        syslog(LOG_CRIT, "Processed frame %d from ring buffer at head index %d, whith selected to save = %d\n", process_framecnt, ring_buffer.head_idx, ring_buffer.save_frame[ring_buffer.head_idx].is_selected_to_save);
+        // ************************************************************************************************************************
+        // syslog(LOG_CRIT, "Processed frame %d from ring buffer at head index %d, whith selected to save = %d\n", process_framecnt, ring_buffer.head_idx, ring_buffer.save_frame[ring_buffer.head_idx].is_selected_to_save);
+        // ************************************************************************************************************************
     }
     else
     {
@@ -664,7 +669,7 @@ int seq_frame_process(void)
     ring_buffer.count = ring_buffer.count - 5; // we should process the frame which does not differ from the previous frame, so we should move the head index to the next frame which is not marked as different from the previous frame, and we should also decrease the count of frames in the ring buffer by 5 because we should have at least 5 frames in the ring buffer for each frame per second rate that we want to support, so that we can have a good chance of not losing frames while we are processing and saving frames, but also not so large that we are wasting a lot of memory on the ring buffer
                                                // ring_buffer.head_idx = (ring_buffer.head_idx + 5) % ring_buffer.ring_size; // we should process the frame which does not differ from the previous frame, so we should move the head index to the next frame which is not marked as different from the previous frame,
 
-    syslog(LOG_CRIT, "rb.tail=%d, rb.head=%d, rb.count=%d ", ring_buffer.tail_idx, ring_buffer.head_idx, ring_buffer.count);
+    //syslog(LOG_CRIT, "rb.tail=%d, rb.head=%d, rb.count=%d ", ring_buffer.tail_idx, ring_buffer.head_idx, ring_buffer.count);
 
     if (process_framecnt > 0)
     {
@@ -707,7 +712,9 @@ int seq_frame_store(void)
 
             clock_gettime(CLOCK_MONOTONIC, &time_now);
             fnow = (double)time_now.tv_sec + (double)time_now.tv_nsec / 1000000000.0;
+            // ------------------------------------------------------------------------------------------
             syslog(LOG_CRIT, COURSE_FRM_CAPT_SYSLOG(COURSE, ASS), save_framecnt, (fnow - fstart));
+            // ------------------------------------------------------------------------------------------
             // syslog(LOG_CRIT, "save_framecnt=%d at %lf and %lf FPS", save_framecnt, (fnow - fstart), (double)(save_framecnt) / (fnow - fstart));
             // printf(" saved at %lf, @ %lf FPS\n", (fnow - fstart), (double)(save_framecnt) / (fnow - fstart));
             // printf("---Saving time for this frame: %lf\n", (fnow - store_start));
