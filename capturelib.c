@@ -11,7 +11,7 @@
  *
  *      This program is provided with the V4L2 API
  * see http://linuxtv.org/docs.php for more information
- * 
+ *
  * changed by Vladimir Zdravkov to match requirents of the cap project for ECEN 5623 at the University of Colorado Boulder
  */
 #define _GNU_SOURCE
@@ -60,7 +60,7 @@
 #define LAST_FRAMES (1)
 #define CAPTURE_FRAMES (300 + LAST_FRAMES)
 #define FRAMES_TO_ACQUIRE (CAPTURE_FRAMES + STARTUP_FRAMES + LAST_FRAMES)
-#define FRAMES_TO_SKIP (-1)
+#define FRAMES_TO_SKIP (1)
 
 #define FRAMES_PER_SEC (1)
 // #define FRAMES_PER_SEC (10)
@@ -103,8 +103,8 @@ struct ring_buffer_t
 {
     unsigned int ring_size;
 
-    int tail_idx;
-    int head_idx;
+    unsigned int tail_idx;
+    unsigned int head_idx;
     int count;
 
     struct save_frame_t save_frame[ACQ_FRAMES_STORED_PER_FPS * FRAMES_PER_SEC];
@@ -125,8 +125,8 @@ struct ring_out_buffer_t
 {
     unsigned int ring_size;
 
-    int tail_idx;
-    int head_idx;
+    unsigned int tail_idx;
+    unsigned int head_idx;
     int count;
 
     struct save_out_frame_t save_out_frame[ACQ_FRAMES_STORED_PER_FPS * FRAMES_PER_SEC];
@@ -318,13 +318,13 @@ static int save_image(const void *p, int size, struct timespec *frame_time)
     unsigned char *frame_ptr = (unsigned char *)p;
 
     save_framecnt++;
-    // syslog(LOG_CRIT,"save frame %d: \n", save_framecnt);
+    // syslog(LOG_CRIT,"save frame %d: ", save_framecnt);
 
 #ifdef DUMP_FRAMES
 
     if (fmt.fmt.pix.pixelformat == V4L2_PIX_FMT_GREY)
     {
-        //syslog(LOG_CRIT, "Dump graymap as-is size %d\n", size);
+        // syslog(LOG_CRIT, "Dump graymap as-is size %d", size);
         dump_pgm(frame_ptr, size, save_framecnt, frame_time);
     }
 
@@ -336,7 +336,7 @@ static int save_image(const void *p, int size, struct timespec *frame_time)
         if (save_framecnt > 0)
         {
             dump_ppm(frame_ptr, ((size * 6) / 4), save_framecnt, frame_time);
-            // syslog(LOG_CRIT, "Dump YUYV converted to RGB size %d\n", size);
+            // syslog(LOG_CRIT, "Dump YUYV converted to RGB size %d", size);
         }
 #elif defined(COLOR_CONVERT_GRAY)
         if (save_framecnt > 0)
@@ -404,6 +404,7 @@ static int process_image(const void *p, int size)
         {
             ring_output_buffer.save_out_frame[ring_output_buffer.tail_idx].is_ready_to_save = true;
             ring_output_buffer.tail_idx = (ring_output_buffer.tail_idx + 1) % ring_output_buffer.ring_size;
+            ring_output_buffer.count++;
         }
 
 #elif defined(COLOR_CONVERT_GRAY)
@@ -501,12 +502,12 @@ static int read_frame(void)
 //     in the threaded path (apply_filter is only called from seq_frame_filter).
 static int apply_filter(void *p, int size)
 {
-    unsigned char *frame  = (unsigned char *)p;
-    const int width       = HRES;
-    const int height      = VRES;
-    const int channels    = 3;                    // RGB24: 3 bytes per pixel
-    const int stride      = width * channels;
-    const int data_size   = height * stride;
+    unsigned char *frame = (unsigned char *)p;
+    const int width = HRES;
+    const int height = VRES;
+    const int channels = 3; // RGB24: 3 bytes per pixel
+    const int stride = width * channels;
+    const int data_size = height * stride;
 
     // Copy original frame so we read unmodified neighbors while writing output.
     memcpy(scratchpad_buffer, frame, data_size);
@@ -518,16 +519,18 @@ static int apply_filter(void *p, int size)
         {
             for (int k = 0; k < channels; k++)
             {
-                int center = scratchpad_buffer[ r      * stride +  c      * channels + k];
-                int top    = scratchpad_buffer[(r - 1) * stride +  c      * channels + k];
-                int bottom = scratchpad_buffer[(r + 1) * stride +  c      * channels + k];
-                int left   = scratchpad_buffer[ r      * stride + (c - 1) * channels + k];
-                int right  = scratchpad_buffer[ r      * stride + (c + 1) * channels + k];
+                int center = scratchpad_buffer[r * stride + c * channels + k];
+                int top = scratchpad_buffer[(r - 1) * stride + c * channels + k];
+                int bottom = scratchpad_buffer[(r + 1) * stride + c * channels + k];
+                int left = scratchpad_buffer[r * stride + (c - 1) * channels + k];
+                int right = scratchpad_buffer[r * stride + (c + 1) * channels + k];
 
                 int val = 5 * center - top - bottom - left - right;
 
-                if      (val < 0)   val = 0;
-                else if (val > 255) val = 255;
+                if (val < 0)
+                    val = 0;
+                else if (val > 255)
+                    val = 255;
 
                 frame[r * stride + c * channels + k] = (unsigned char)val;
             }
@@ -542,7 +545,7 @@ int seq_frame_read(void)
     fd_set fds;
     struct timeval tv;
     int rc;
-    int curr_frame_idx;
+    int curr_frame_idx, prev_read_framecnt;
     double frame_diff_pers;
     unsigned int diffsum;
     FD_ZERO(&fds);
@@ -579,7 +582,7 @@ int seq_frame_read(void)
     {
         ring_buffer.save_frame[curr_frame_idx].time_stamp = time_now;
         // printf("Acquisitation: read_framecnt=%d, rb.tail=%d, rb.head=%d, rb.count=%d at %lf and %lf FPS.\n", read_framecnt, ring_buffer.tail_idx, ring_buffer.head_idx, ring_buffer.count, (fnow - fstart), (double)(read_framecnt) / (fnow - fstart));
-       
+
         // syslog(LOG_CRIT, "read_framecnt=%d, rb.tail=%d, rb.head=%d, rb.count=%d at %lf and %lf FPS", read_framecnt, ring_buffer.tail_idx, ring_buffer.head_idx, ring_buffer.count, (fnow-fstart), (double)(read_framecnt) / (fnow-fstart));
         // syslog(LOG_CRIT, "read_framecnt=%d at %lf and %lf FPS", read_framecnt, (fnow - fstart), (double)(read_framecnt) / (fnow - fstart));
     }
@@ -589,8 +592,7 @@ int seq_frame_read(void)
     }
 
     // printf("--Acquisitation read frame at: %lf\n", (fnow - read_start));
-
-    if (read_framecnt > FRAMES_TO_SKIP)
+    if (read_framecnt > 0 && ring_buffer.count > FRAMES_TO_SKIP)
     {
         // Select frames to save based on whether they are different from the previous frame
         struct timespec sel_ts_start, sel_ts_now;
@@ -607,10 +609,22 @@ int seq_frame_read(void)
         {
             ring_buffer.save_frame[curr_frame_idx].is_different_from_previous = true;
             syslog(LOG_CRIT, "Frame at tail of ring buffer %d is not the same as previous frame, marked.\n", curr_frame_idx);
-            if (ring_buffer.count > 2)
+
+            // guard 1 against wrong positive
+            if (curr_frame_idx > 1 && (ring_buffer.save_frame[curr_frame_idx - 1].is_different_from_previous))
             {
-                ring_buffer.save_frame[curr_frame_idx - 2].is_selected_to_save = true;
-                ring_buffer.head_idx = (curr_frame_idx - 2) % ring_buffer.ring_size;  // we should prepare to process the frame which does not differ from the previous frame
+                // guard 2 against wrong positive
+                if (read_framecnt > (prev_read_framecnt + 2)) 
+                {
+                    ring_buffer.save_frame[curr_frame_idx - 2].is_selected_to_save = true;
+                    ring_buffer.head_idx = (curr_frame_idx - 2) % ring_buffer.ring_size; // we should prepare to process the frame which does not differ from the previous frame
+
+                    ring_buffer.save_frame[curr_frame_idx].is_different_from_previous = false;
+                    ring_buffer.save_frame[curr_frame_idx - 1].is_different_from_previous = false;
+                    syslog(LOG_CRIT, "Frame at index %d is selected to save, read counter: %d, prev read counter: %d", curr_frame_idx - 2, read_framecnt, prev_read_framecnt);
+
+                    prev_read_framecnt = read_framecnt;
+                }
             }
         }
         else
@@ -631,31 +645,33 @@ int seq_frame_process(void)
     struct timespec proc_ts_start, proc_ts_now;
     double proc_start, proc_now;
 
-    //syslog(LOG_CRIT, "processing rb.tail=%d, rb.head=%d, rb.count=%d\n", ring_buffer.tail_idx, ring_buffer.head_idx, ring_buffer.count);
+    // syslog(LOG_CRIT, "processing rb.tail=%d, rb.head=%d, rb.count=%d\n", ring_buffer.tail_idx, ring_buffer.head_idx, ring_buffer.count);
 
-    ring_buffer.head_idx = (ring_buffer.head_idx + 2) % ring_buffer.ring_size;
+    // ring_buffer.head_idx = (ring_buffer.head_idx + 2) % ring_buffer.ring_size;
 
     if (read_framecnt > 0)
     {
         clock_gettime(CLOCK_MONOTONIC, &proc_ts_start);
         proc_start = (double)proc_ts_start.tv_sec + (double)proc_ts_start.tv_nsec / 1000000000.0;
         cnt = process_image((void *)&(ring_buffer.save_frame[ring_buffer.head_idx].frame[0]), HRES * VRES * PIXEL_SIZE);
+        syslog(LOG_CRIT, "Processed frame %d from ring buffer at head index %d, whith selected to save = %d\n", process_framecnt, ring_buffer.head_idx, ring_buffer.save_frame[ring_buffer.head_idx].is_selected_to_save);
     }
     else
     {
         printf("\nNo processing because no frames have been read yet.\n");
     }
-    ring_buffer.head_idx = (ring_buffer.head_idx + 3) % ring_buffer.ring_size; // advance head index by 5 to simulate processing delay, which should cause the ring buffer count to increase by 5, and then we will subtract 5 from the count to simulate that those frames have been processed and are no longer in the ring buffer
-    ring_buffer.count = ring_buffer.count - 5;
+    // ring_buffer.head_idx = (ring_buffer.head_idx + 1) % ring_buffer.ring_size;
+    ring_buffer.count = ring_buffer.count - 5; // we should process the frame which does not differ from the previous frame, so we should move the head index to the next frame which is not marked as different from the previous frame, and we should also decrease the count of frames in the ring buffer by 5 because we should have at least 5 frames in the ring buffer for each frame per second rate that we want to support, so that we can have a good chance of not losing frames while we are processing and saving frames, but also not so large that we are wasting a lot of memory on the ring buffer
+                                               // ring_buffer.head_idx = (ring_buffer.head_idx + 5) % ring_buffer.ring_size; // we should process the frame which does not differ from the previous frame, so we should move the head index to the next frame which is not marked as different from the previous frame,
 
-    //syslog(LOG_CRIT, "rb.tail=%d, rb.head=%d, rb.count=%d ", ring_buffer.tail_idx, ring_buffer.head_idx, ring_buffer.count);
+    syslog(LOG_CRIT, "rb.tail=%d, rb.head=%d, rb.count=%d ", ring_buffer.tail_idx, ring_buffer.head_idx, ring_buffer.count);
 
     if (process_framecnt > 0)
     {
         clock_gettime(CLOCK_MONOTONIC, &time_now);
         fnow = (double)time_now.tv_sec + (double)time_now.tv_nsec / 1000000000.0;
-        //syslog(LOG_CRIT, " processed at %lf, @ %lf FPS\n", (fnow - fstart), (double)(process_framecnt) / (fnow - fstart));
-        //syslog(LOG_CRIT, "---Processing time for this frame: %lf\n", (fnow - proc_start));
+        // syslog(LOG_CRIT, " processed at %lf, @ %lf FPS\n", (fnow - fstart), (double)(process_framecnt) / (fnow - fstart));
+        // syslog(LOG_CRIT, "---Processing time for this frame: %lf\n", (fnow - proc_start));
     }
     else
     {
@@ -679,22 +695,26 @@ int seq_frame_store(void)
 
         if ((ring_output_buffer.save_out_frame[ring_output_buffer.head_idx].is_ready_to_save) && (ring_output_buffer.save_out_frame[ring_output_buffer.head_idx].is_filter_applied))
         {
-           
+
             cnt2 = save_image((void *)&(ring_output_buffer.save_out_frame[ring_output_buffer.head_idx].frame[0]), HRES * VRES * PIXEL_SIZE, &time_now);
 
             ring_output_buffer.save_out_frame[ring_output_buffer.head_idx].is_ready_to_save = false;
             ring_output_buffer.save_out_frame[ring_output_buffer.head_idx].is_filter_applied = false;
 
-            ring_output_buffer.head_idx = (ring_output_buffer.head_idx + 1) % ring_output_buffer.ring_size;
-
-            //printf("save_framecnt=%d ", save_framecnt);
+            ring_output_buffer.head_idx = (ring_output_buffer.head_idx + 1u) % ring_output_buffer.ring_size;
+            ring_output_buffer.count--;
+            // printf("save_framecnt=%d ", save_framecnt);
 
             clock_gettime(CLOCK_MONOTONIC, &time_now);
             fnow = (double)time_now.tv_sec + (double)time_now.tv_nsec / 1000000000.0;
             syslog(LOG_CRIT, COURSE_FRM_CAPT_SYSLOG(COURSE, ASS), save_framecnt, (fnow - fstart));
             // syslog(LOG_CRIT, "save_framecnt=%d at %lf and %lf FPS", save_framecnt, (fnow - fstart), (double)(save_framecnt) / (fnow - fstart));
-            //printf(" saved at %lf, @ %lf FPS\n", (fnow - fstart), (double)(save_framecnt) / (fnow - fstart));
-            //printf("---Saving time for this frame: %lf\n", (fnow - store_start));
+            // printf(" saved at %lf, @ %lf FPS\n", (fnow - fstart), (double)(save_framecnt) / (fnow - fstart));
+            // printf("---Saving time for this frame: %lf\n", (fnow - store_start));
+        }
+        else
+        {
+            syslog(LOG_CRIT, "The frame %u from output ring buffer rejected to save.", ring_output_buffer.head_idx);
         }
     }
     else
@@ -717,17 +737,20 @@ int seq_frame_filter(void)
 
         apply_filter((void *)&(ring_output_buffer.save_out_frame[ring_output_buffer.head_idx].frame[0]), HRES * VRES * PIXEL_SIZE * 3);
         ring_output_buffer.save_out_frame[ring_output_buffer.head_idx].is_filter_applied = true;
-        
-        // syslog(LOG_CRIT, "Saved %d frame from output ring buffer processing by filter \n", save_framecnt);
+
+        // syslog(LOG_CRIT, "Saved %d frame from output ring buffer processing by filter.", save_framecnt);
         filter_framecnt++;
         clock_gettime(CLOCK_MONOTONIC, &time_now);
         fnow = (double)time_now.tv_sec + (double)time_now.tv_nsec / 1000000000.0;
-        // syslog(LOG_CRIT, " filtered at %lf, @ %lf FPS\n", (fnow - fstart), (double)(filter_framecnt) / (fnow - fstart));
+        // syslog(LOG_CRIT, " filtered at %lf, @ %lf FPS", (fnow - fstart), (double)(filter_framecnt) / (fnow - fstart));
     }
 
     return filter_framecnt;
 }
 
+// This is the main loop for the sequential version of the program, which reads frames from the camera, processes them, and saves them to disk in a sequential manner.
+// The main loop will continue to run until the specified number of frames have been acquired, processed, and saved.
+// The main loop also includes a delay between each frame acquisition to control the frame rate of the program.
 static void mainloop(void)
 {
     unsigned int count;
@@ -812,7 +835,7 @@ static void mainloop(void)
                         printf(" read at %lf, @ %lf FPS\n", (fnow - fstart), (double)(read_framecnt) / (fnow - fstart));
 
                         memcpy((void *)&(ring_buffer.save_frame[ring_buffer.tail_idx].frame[0]), buffers[frame_buf.index].start, frame_buf.bytesused);
-                        //syslog(LOG_CRIT, "memcpy to rb.tail=%d, rb.head=%d, ptr=%p\n", ring_buffer.tail_idx, ring_buffer.head_idx, (void *)&(ring_buffer.save_frame[ring_buffer.tail_idx].frame[0]));
+                        // syslog(LOG_CRIT, "memcpy to rb.tail=%d, rb.head=%d, ptr=%p", ring_buffer.tail_idx, ring_buffer.head_idx, (void *)&(ring_buffer.save_frame[ring_buffer.tail_idx].frame[0]));
 
                         // advance ring buffer for next read
                         ring_buffer.tail_idx = (ring_buffer.tail_idx + 1) % ring_buffer.ring_size;
