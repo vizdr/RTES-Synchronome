@@ -118,7 +118,8 @@ int seq_frame_get_for_display(unsigned char *curr_rgb,
                               int *diff_amplify,
                               int *is_motion,
                               int *is_saved,
-                              int *frame_num);
+                              int *frame_num,
+                              double *diff_pct);
 #endif
 
 int seq_frame_read(void);
@@ -785,6 +786,7 @@ void *Service_4_frame_display(void *threadp)
     int curr_slot = -1, prev_slot = -1, diff_slot = -1;
     int i, frame_bytes;
     int is_motion = 0, is_saved = 0, fnum = 0, diff_amp;
+    double diff_pct = 0.0;
     char title[80];
     SDL_Event ev;
     int xpos = 0;
@@ -864,7 +866,8 @@ void *Service_4_frame_display(void *threadp)
 
         diff_amp = VIEWER_DIFF_AMPLIFY;
         if (seq_frame_get_for_display(curr_rgb, prev_rgb,
-                                      &diff_amp, &is_motion, &is_saved, &fnum) < 0)
+                                      &diff_amp, &is_motion, &is_saved, &fnum,
+                                      &diff_pct) < 0)
             continue; /* fewer than 2 frames acquired yet */
 
         /* per-pixel amplified absolute diff across all RGB channels */
@@ -891,7 +894,7 @@ void *Service_4_frame_display(void *threadp)
         SDL_RenderPresent(ren[prev_slot]);
 #endif
 #if VIEWER_SHOW_DIFF
-        snprintf(title, sizeof(title), "Diff (x%d)", diff_amp);
+        snprintf(title, sizeof(title), "Diff (x%d) %.2f%%", diff_amp, diff_pct);
         SDL_SetWindowTitle(win[diff_slot], title);
         SDL_UpdateTexture(tex[diff_slot], NULL, diff_buf, VIEWER_WIN_W * 3);
         SDL_RenderClear(ren[diff_slot]);

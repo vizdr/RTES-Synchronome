@@ -1444,9 +1444,11 @@ int seq_frame_get_for_display(unsigned char *curr_rgb,
                               int *diff_amplify,
                               int *is_motion,
                               int *is_saved,
-                              int *frame_num)
+                              int *frame_num,
+                              double *diff_pct)
 {
     int t, ci, pi;
+    unsigned int diffsum;
 
     (void)diff_amplify; /* caller owns this value; parameter reserved for future use */
 
@@ -1459,6 +1461,11 @@ int seq_frame_get_for_display(unsigned char *curr_rgb,
 
     yuyv_frame_to_rgb(ring_buffer.save_frame[ci].frame, curr_rgb, HRES, VRES);
     yuyv_frame_to_rgb(ring_buffer.save_frame[pi].frame, prev_rgb, HRES, VRES);
+
+    diffsum = frame_diff_yuyv(ring_buffer.save_frame[pi].frame,
+                              ring_buffer.save_frame[ci].frame,
+                              HRES, VRES);
+    *diff_pct = frame_percent_diff(diffsum, HRES, VRES, false);
 
     *is_motion = (int)ring_buffer.save_frame[ci].is_different_from_previous;
     *is_saved = (int)ring_buffer.save_frame[ci].is_selected_to_save;
