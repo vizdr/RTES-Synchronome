@@ -81,10 +81,12 @@
 int abortTest = FALSE;
 atomic_int abortS1 = FALSE, abortS2 = FALSE, abortS3 = FALSE, abortS5 = FALSE;
 sem_t semS1, semS2, semS3, semS5, semS6;
+
 #if VIEWER_ENABLE
 int abortS4 = FALSE;
 sem_t semS4;
 #endif
+
 struct timespec start_time_val;
 double start_realtime;
 
@@ -223,7 +225,7 @@ void main(void)
     clock_getres(MY_CLOCK_TYPE, &current_time_res);
     current_realtime_res = realtime(&current_time_res);
 
-    //syslog(LOG_CRIT, "START High Rate Sequencer @ sec=%6.9lf with resolution %6.9lf", (current_realtime - start_realtime), current_realtime_res);
+    // syslog(LOG_CRIT, "START High Rate Sequencer @ sec=%6.9lf with resolution %6.9lf", (current_realtime - start_realtime), current_realtime_res);
 
     printf("System has %d processors configured and %d available.\n", get_nprocs_conf(), get_nprocs());
 
@@ -568,7 +570,7 @@ void *Service_1_frame_acquisition(void *threadp)
     current_realtime = realtime(&current_time_val);
     // syslog(LOG_CRIT, "S1 thread @ sec=%6.9lf", current_realtime - start_realtime);
 
-    // to avoid zero-fill allocation 
+    // to avoid zero-fill allocation
     stack_prefault();
 
     while (!abortS1) // check for synchronous abort request
@@ -588,7 +590,7 @@ void *Service_1_frame_acquisition(void *threadp)
         current_realtime = realtime(&current_time_val);
         // syslog(LOG_CRIT, "S1 at 5 Hz on core %d for release %llu @ sec=%6.9lf", sched_getcpu(), S1Cnt, current_realtime - start_realtime);
 
-        if (S1Cnt > 250)
+        if (S1Cnt > 2500)
         {
             abortTest = TRUE;
         };
@@ -611,7 +613,7 @@ void *Service_2_frame_process(void *threadp)
     current_realtime = realtime(&current_time_val);
     // syslog(LOG_CRIT, "S2 thread @ sec=%6.9lf", current_realtime - start_realtime);
 
-    // to avoid zero-fill allocation 
+    // to avoid zero-fill allocation
     stack_prefault();
 
     while (!abortS2)
@@ -645,8 +647,8 @@ void *Service_3_frame_storage(void *threadp)
     clock_gettime(MY_CLOCK_TYPE, &current_time_val);
     current_realtime = realtime(&current_time_val);
     // syslog(LOG_CRIT, "S3 thread @ sec=%6.9lf\n", current_realtime - start_realtime);
-  
-    // to avoid zero-fill allocation 
+
+    // to avoid zero-fill allocation
     stack_prefault();
 
     while (!abortS3)
@@ -665,7 +667,7 @@ void *Service_3_frame_storage(void *threadp)
         // syslog(LOG_CRIT, "S3 at 1 Hz on core %d for release %llu @ sec=%6.9lf", sched_getcpu(), S3Cnt, current_realtime - start_realtime);
 
         // after last write, set synchronous abort
-        if (store_cnt == 10)
+        if (store_cnt == 31)
         {
             abortTest = TRUE;
         };
@@ -691,7 +693,7 @@ void *Service_5_frame_filter(void *threadp)
     current_realtime = realtime(&current_time_val);
     // syslog(LOG_CRIT, "S5 thread @ sec=%6.9lf", current_realtime - start_realtime);
 
-    // to avoid zero-fill allocation 
+    // to avoid zero-fill allocation
     stack_prefault();
 
     while (!abortS5)
@@ -712,8 +714,10 @@ void *Service_5_frame_filter(void *threadp)
         {
             filter_cnt_prev = filter_cnt;
             filter_cnt = seq_frame_filter();
-                if (filter_cnt_prev == filter_cnt)
-                    //syslog(LOG_CRIT, "S5: filter was not applied for release %llu, filter count %d", S5Cnt, filter_cnt);
+            if (filter_cnt_prev == filter_cnt)
+            {
+                // syslog(LOG_CRIT, "S5: filter was not applied for release %llu, filter count %d", S5Cnt, filter_cnt);
+            }
         }
 
         clock_gettime(MY_CLOCK_TYPE, &current_time_val);
@@ -721,7 +725,7 @@ void *Service_5_frame_filter(void *threadp)
         // syslog(LOG_CRIT, "S5 at 1 Hz on core %d for release %llu @ sec=%6.9lf", sched_getcpu(), S5Cnt, current_realtime - start_realtime);
 
         // after last write, set synchronous abort
-        if (filter_cnt == 181)
+        if (filter_cnt == 182)
         {
             abortTest = TRUE;
         };
