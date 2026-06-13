@@ -726,7 +726,7 @@ void *Service_5_frame_filter(void *threadp)
         // syslog(LOG_CRIT, "S5 at 1 Hz on core %d for release %llu @ sec=%6.9lf", sched_getcpu(), S5Cnt, current_realtime - start_realtime);
 
         // after last write, set synchronous abort
-        if (filter_cnt == 182)
+        if (filter_cnt == 1802)
         {
             abortTest = TRUE;
         };

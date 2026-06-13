@@ -58,7 +58,7 @@
 // #define VRES_STR "240"
 
 #define STARTUP_FRAMES (30)
-#define AUTOFOCUS_OFF_FRAMES (20)
+#define AUTOFOCUS_OFF_FRAMES (15)
 #define LAST_FRAMES (1)
 #define CAPTURE_FRAMES (300 + LAST_FRAMES)
 #define FRAMES_TO_ACQUIRE (CAPTURE_FRAMES + STARTUP_FRAMES + LAST_FRAMES)
@@ -76,6 +76,8 @@
 #define ACQ_FRAMES_STORED_PER_FPS (5) // input ring buffer size should be large enough to hold at least 5 frames for each frame per second rate that we want to support, so that we can have a good chance of not losing frames while we are processing and saving frames, but also not so large that we are wasting a lot of memory on the ring buffer
 #define DRIVER_MMAP_BUFFERS (6)       // request buffers for delay
 #define RING_OUTPUT_BUFFER_SIZE (FRAMES_PER_SEC + 3)
+#define DIFF_MIN (0.45f)  // value from experiment
+#define DIFF_MAX (0.65f) // value from experiment
 
 // adjacent string literals are concatenated at compile time, so we can use this to build our log message format string
 #define COURSE_FRM_CAPT_SYSLOG(crs, nmb) "[COURSE " crs "][" nmb "][Frame Count: %d][Image Capture Start Time: %lf seconds]"
@@ -139,12 +141,14 @@ static struct ring_out_buffer_t ring_output_buffer;
 unsigned char scratchpad_buffer[MAX_HRES * MAX_VRES * MAX_PIXEL_SIZE]; // this is used for processing and saving frames, so that we don't have to worry about the ring buffer being overwritten by the acquisition loop while we are processing or saving a frame
 bool is_scratchpad_buffer_in_use = false;                              // this is used to indicate whether the scratchpad buffer is currently being used for processing or saving a frame, so that we can avoid overwriting it with new frames from the acquisition loop while we are processing or saving a frame
 
-static bool is_diff_detected = false;
 static unsigned int diff_counter = 0;
 static unsigned int diff_counter2 = 0;
 static unsigned int diff_frame[4] = {0, 0, 0, 0};
 static unsigned int diff_frame2[4] = {0, 0, 0, 0};
-static unsigned int startup_head_idx = 0;
+
+static unsigned int first_startup_head_idx = UINT_MAX;
+static unsigned int second_startup_head_idx = UINT_MAX;
+static unsigned int sel_startup_head_idx = UINT_MAX;
 static unsigned int capture_head_idx = UINT_MAX;
 
 static int camera_device_fd = -1;
@@ -596,14 +600,87 @@ static void disable_autofocus(void)
                read_framecnt, settled_focus);
 }
 
+// Re-enable auto exposure, restoring camera to its default state before exit.
+static void enable_auto_exposure(void)
+{
+    struct v4l2_control ctrl;
+
+    ctrl.id = V4L2_CID_EXPOSURE_AUTO;
+    ctrl.value = V4L2_EXPOSURE_APERTURE_PRIORITY; /* typical webcam auto-exposure default */
+    if (xioctl(camera_device_fd, VIDIOC_S_CTRL, &ctrl) == -1)
+        perror("enable_auto_exposure: V4L2_CID_EXPOSURE_AUTO");
+    else
+        syslog(LOG_CRIT, "Auto exposure re-enabled on shutdown\n");
+
+    /* restore auto gain if the camera supports it; ignore EINVAL */
+    ctrl.id = V4L2_CID_AUTOGAIN;
+    ctrl.value = 1;
+    xioctl(camera_device_fd, VIDIOC_S_CTRL, &ctrl);
+}
+
+// Disable auto exposure and auto gain after the camera has settled.
+// Step 1: read settled exposure; step 2: switch to manual; step 3: lock it.
+static void disable_auto_exposure(void)
+{
+    struct v4l2_control ctrl;
+
+    /* Step 1: read the exposure the camera settled at under auto control */
+    ctrl.id = V4L2_CID_EXPOSURE_ABSOLUTE;
+    if (xioctl(camera_device_fd, VIDIOC_G_CTRL, &ctrl) == -1)
+    {
+        perror("disable_auto_exposure: VIDIOC_G_CTRL V4L2_CID_EXPOSURE_ABSOLUTE");
+        return;
+    }
+    int settled_exposure = ctrl.value;
+
+    /* Step 2: switch to manual exposure mode */
+    ctrl.id = V4L2_CID_EXPOSURE_AUTO;
+    ctrl.value = V4L2_EXPOSURE_MANUAL;
+    if (xioctl(camera_device_fd, VIDIOC_S_CTRL, &ctrl) == -1)
+    {
+        perror("disable_auto_exposure: VIDIOC_S_CTRL V4L2_CID_EXPOSURE_AUTO");
+        return;
+    }
+
+    /* Step 3: write back the settled value to prevent the driver from drifting */
+    ctrl.id = V4L2_CID_EXPOSURE_ABSOLUTE;
+    ctrl.value = settled_exposure;
+    if (xioctl(camera_device_fd, VIDIOC_S_CTRL, &ctrl) == -1)
+        perror("disable_auto_exposure: VIDIOC_S_CTRL V4L2_CID_EXPOSURE_ABSOLUTE");
+    else
+        syslog(LOG_CRIT, "Auto exposure disabled at read_framecnt=%d, exposure locked at %d (units: 100 us)\n",
+               read_framecnt, settled_exposure);
+
+    /* Step 4: disable auto gain (optional — ignore EINVAL if unsupported) */
+    ctrl.id = V4L2_CID_AUTOGAIN;
+    ctrl.value = 0;
+    if (xioctl(camera_device_fd, VIDIOC_S_CTRL, &ctrl) == -1)
+        perror("disable_auto_exposure: V4L2_CID_AUTOGAIN (may be unsupported on this camera)");
+}
+
+// we carefully adjust head_idx dependently on the pattern of 4 subsequent difference detections 
 static unsigned int compute_head_idx(const unsigned int *slots, int n_slots,
                                      unsigned int count, unsigned int fallback)
 {
-    if (count > 0 && count < (unsigned int)n_slots)
+    if (count == 1)
     {
-        for (int i = 0; i < n_slots; i++)
-            if (slots[i] > 0)
-                return (unsigned int)(i + 3) % ring_buffer.ring_size;
+        if (slots[0] == 1)
+            return 0;
+        if (slots[1] == 1)
+            return 0;
+        if (slots[2] == 1)
+            return 1;
+        if (slots[3] == 1)
+            return 2;
+    }
+    else if (count == 2)
+    {
+        if (slots[0] == 1 && slots[1] == 1)
+            return 0;
+        if (slots[1] == 1 && slots[2] == 1)
+            return 1;
+        if (slots[2] == 1 && slots[3] == 1)
+            return 2;
     }
     return fallback;
 }
@@ -623,7 +700,7 @@ int seq_frame_read(void)
     tv.tv_sec = 2;
     tv.tv_usec = 0;
 
-    bool is_head_adjasted = false;
+    unsigned int prev_head_idx = UINT_MAX;  // the initial value is chosen to avoid missleading with the obtained values
 
     rc = select(camera_device_fd + 1, &fds, NULL, NULL, &tv);
 
@@ -654,7 +731,31 @@ int seq_frame_read(void)
         if (!autofocus_disabled)
         {
             disable_autofocus();
+            // disable_auto_exposure();  // may be helfull at certain environment
             autofocus_disabled = 1;
+        }
+    }
+    // we try to determine correct startup head_idx two times to launch frame processing with the appropriate head_idx
+    // it is attempt to avoid blur of the second hand on the saved frames
+    if ((read_framecnt > -9 && read_framecnt < -4) && curr_frame_idx > 0)
+    {
+
+        diffsum = frame_diff_yuyv((void *)&(ring_buffer.save_frame[curr_frame_idx].frame[0]), (void *)&(ring_buffer.save_frame[curr_frame_idx - 1].frame[0]), HRES, VRES);
+        frame_diff_pers = frame_percent_diff(diffsum, HRES, VRES, false);
+        if (frame_diff_pers > DIFF_MIN && frame_diff_pers < DIFF_MAX) // values from experiment
+        {
+            int slot = read_framecnt + 8; // -8→0, -7→1, -6→2, -5→3
+            diff_frame[slot] = 1;
+            diff_counter++;
+        }
+        if (read_framecnt == -5)
+        {
+            syslog(LOG_CRIT, "the first startup: diff_counter=%d, slots=[%d,%d,%d,%d]",
+                   diff_counter, diff_frame[0], diff_frame[1], diff_frame[2], diff_frame[3]);
+            first_startup_head_idx = compute_head_idx(diff_frame,
+                                                      sizeof(diff_frame) / sizeof(diff_frame[0]),
+                                                      diff_counter, UINT_MAX /*default*/);
+            syslog(LOG_CRIT, "The first startup_head_idx: %u, curr_frame_idx= %d", first_startup_head_idx, curr_frame_idx);
         }
     }
 
@@ -663,7 +764,7 @@ int seq_frame_read(void)
 
         diffsum = frame_diff_yuyv((void *)&(ring_buffer.save_frame[curr_frame_idx].frame[0]), (void *)&(ring_buffer.save_frame[curr_frame_idx - 1].frame[0]), HRES, VRES);
         frame_diff_pers = frame_percent_diff(diffsum, HRES, VRES, false);
-        if (frame_diff_pers > 0.33 && frame_diff_pers < 0.6) // values from experiment
+        if (frame_diff_pers > DIFF_MIN && frame_diff_pers < DIFF_MAX) // values from experiment
         {
             int slot = read_framecnt + 3; // -3→0, -2→1, -1→2, 0→3
             diff_frame[slot] = 1;
@@ -671,20 +772,24 @@ int seq_frame_read(void)
         }
         if (read_framecnt == 0)
         {
-            syslog(LOG_CRIT, "startup: diff_counter=%d, slots=[%d,%d,%d,%d]",
+            syslog(LOG_CRIT, "The second startup: diff_counter=%d, slots=[%d,%d,%d,%d]",
                    diff_counter, diff_frame[0], diff_frame[1], diff_frame[2], diff_frame[3]);
-            startup_head_idx = compute_head_idx(diff_frame,
-                                                sizeof(diff_frame)/sizeof(diff_frame[0]),
-                                                diff_counter, 2 /*default*/);
-            syslog(LOG_CRIT, "startup_head_idx: %u", startup_head_idx);
+            second_startup_head_idx = compute_head_idx(diff_frame,
+                                                       sizeof(diff_frame) / sizeof(diff_frame[0]),
+                                                       diff_counter, UINT_MAX /*default*/);
+            syslog(LOG_CRIT, "The second startup_head_idx: %u, curr_frame_idx= %d", second_startup_head_idx, curr_frame_idx);
         }
     }
+
+    sel_startup_head_idx = second_startup_head_idx == UINT_MAX ? (first_startup_head_idx == UINT_MAX ? 0 : first_startup_head_idx) : second_startup_head_idx;
 
     if (read_framecnt > 0)
     {
         ring_buffer.save_frame[curr_frame_idx].time_stamp = time_now;
         diff_counter = 0;
         memset(diff_frame, 0, sizeof(diff_frame));
+        if (read_framecnt == 1)
+            syslog(LOG_CRIT, "The selected startup_head_idx: %u, curr_frame_idx= %d", sel_startup_head_idx, curr_frame_idx);
 
         // printf("Acquisitation: read_framecnt=%d, rb.tail=%d, rb.head=%d, rb.count=%d at %lf and %lf FPS.\n", read_framecnt, ring_buffer.tail_idx, ring_buffer.head_idx, ring_buffer.count, (fnow - fstart), (double)(read_framecnt) / (fnow - fstart));
 
@@ -697,13 +802,8 @@ int seq_frame_read(void)
     }
 
     // printf("--Acquisitation read frame at: %lf\n", (fnow - read_start));
-    if (read_framecnt > 0 && curr_frame_idx == 0)
-    {
-        is_diff_detected = false;
-        is_head_adjasted = false;
-    }
 
-    if (read_framecnt > 0 && curr_frame_idx > 0)
+    if (read_framecnt > 0)
     {
         // Select frames to save based on whether they are different from the previous frame
         struct timespec sel_ts_start, sel_ts_now;
@@ -711,61 +811,74 @@ int seq_frame_read(void)
 
         clock_gettime(CLOCK_MONOTONIC, &sel_ts_start);
         sel_start = (double)sel_ts_start.tv_sec + (double)sel_ts_start.tv_nsec / 1000000000.0;
-
+        // we should apply the new head idx with delay to avoid the frames with stucked second hand and jumps of the second hand 
         if (capture_head_idx == UINT_MAX)
         {
-            ring_buffer.save_frame[startup_head_idx].is_selected_to_save = true;
-            ring_buffer.head_idx = (startup_head_idx) % ring_buffer.ring_size;
+            ring_buffer.save_frame[sel_startup_head_idx].is_selected_to_save = true;
+            ring_buffer.head_idx = (sel_startup_head_idx) % ring_buffer.ring_size;
+            prev_head_idx = sel_startup_head_idx;
+        }
+        else  
+        {
+            if (prev_head_idx == capture_head_idx)
+            {
+                ring_buffer.save_frame[capture_head_idx].is_selected_to_save = true;
+                ring_buffer.head_idx = (capture_head_idx) % ring_buffer.ring_size;
+            }
+            else
+            {
+                prev_head_idx = capture_head_idx;
+            }
         }
 
         // curr_frame_idx should be more than 1 here because we skip the first few frames
-        diffsum = frame_diff_yuyv((void *)&(ring_buffer.save_frame[curr_frame_idx].frame[0]), (void *)&(ring_buffer.save_frame[curr_frame_idx - 1].frame[0]), HRES, VRES);
-        frame_diff_pers = frame_percent_diff(diffsum, HRES, VRES, false);
-
-        // compare the frame we are processing to the one that is currently at the tail of the ring buffer, which should be the most recently acquired frame, and if they are not the same,
-        // then we know that we mark the frame
-        if (frame_diff_pers > 0.33 && frame_diff_pers < 0.6) // values from experiment
+        if (curr_frame_idx > 0)
         {
-            ring_buffer.save_frame[curr_frame_idx].is_different_from_previous = true;
-            // **************************************************************************************
-            // syslog(LOG_CRIT, "Frame at tail of ring buffer %d is not the same as previous frame, marked.\n", curr_frame_idx);
-            // **************************************************************************************
-            syslog(LOG_CRIT, "Difference in frame %d : %lf detectecd, read counter: %d", curr_frame_idx, frame_diff_pers, read_framecnt);
-            //syslog(LOG_CRIT, "BEFORE Frame: %d, diff_counter2= %d, diff_frame2[0]= %d, diff_frame[1]= %d, diff_frame[2]= %d, diff_frame[3]= %d", read_framecnt, diff_counter2, diff_frame2[0], diff_frame2[1], diff_frame2[2], diff_frame2[3]);
 
-            int slot = curr_frame_idx - 1; // 1→0, 2→1, 3→2, 4→3
-            diff_frame2[slot] = 1;
-            diff_counter2++;
-        }
-        else
-        {
-            is_diff_detected = false;
-            ring_buffer.save_frame[curr_frame_idx].is_different_from_previous = false;
-            // **************************************************************************************************************
-            // syslog(LOG_CRIT, "Frame at tail of ring buffer %d is the same as previous frame, not marked.\n", curr_frame_idx);
-            // **************************************************************************************************************
-        }
-        if (curr_frame_idx == ring_buffer.ring_size - 1) // we are at the end of period
-        {
-            syslog(LOG_CRIT, "capture: diff_counter2=%d, slots=[%d,%d,%d,%d]",
-                   diff_counter2, diff_frame2[0], diff_frame2[1], diff_frame2[2], diff_frame2[3]);
-            capture_head_idx = compute_head_idx(diff_frame2,
-                                                sizeof(diff_frame2)/sizeof(diff_frame2[0]),
-                                                diff_counter2, startup_head_idx /*fallback*/);
-            syslog(LOG_CRIT, "capture_head_idx: %u", capture_head_idx);
-            diff_counter2 = 0;
-            memset(diff_frame2, 0, sizeof(diff_frame2));
-            ring_buffer.save_frame[capture_head_idx].is_selected_to_save = true;
-            ring_buffer.head_idx = (capture_head_idx) % ring_buffer.ring_size;
-        }
+            diffsum = frame_diff_yuyv((void *)&(ring_buffer.save_frame[curr_frame_idx].frame[0]), (void *)&(ring_buffer.save_frame[curr_frame_idx - 1].frame[0]), HRES, VRES);
+            frame_diff_pers = frame_percent_diff(diffsum, HRES, VRES, false);
 
-        
+            // compare the frame we are processing to the one that is currently at the tail of the ring buffer, which should be the most recently acquired frame, and if they are not the same,
+            // then we know that we mark the frame
+            if (frame_diff_pers > DIFF_MIN && frame_diff_pers < DIFF_MAX) // values from experiment
+            {
+                ring_buffer.save_frame[curr_frame_idx].is_different_from_previous = true;
+                // **************************************************************************************
+                // syslog(LOG_CRIT, "Frame at tail of ring buffer %d is not the same as previous frame, marked.\n", curr_frame_idx);
+                // **************************************************************************************
+                syslog(LOG_CRIT, "Difference in frame %d : %lf detectecd, read counter: %d", curr_frame_idx, frame_diff_pers, read_framecnt);
+                // syslog(LOG_CRIT, "BEFORE Frame: %d, diff_counter2= %d, diff_frame2: [%d, %d, %d, %d]", read_framecnt, diff_counter2, diff_frame2[0], diff_frame2[1], diff_frame2[2], diff_frame2[3]);
+
+                int slot = curr_frame_idx - 1; // 1→0, 2→1, 3→2, 4→3
+                diff_frame2[slot] = 1;
+                diff_counter2++;
+            }
+            else
+            {
+                ring_buffer.save_frame[curr_frame_idx].is_different_from_previous = false;
+                // **************************************************************************************************************
+                // syslog(LOG_CRIT, "Frame at tail of ring buffer %d is the same as previous frame, not marked.\n", curr_frame_idx);
+                // **************************************************************************************************************
+            }
+            if (curr_frame_idx == ring_buffer.ring_size - 1) // we are at the end of period
+            {
+                syslog(LOG_CRIT, "capture: diff_counter2=%d, slots=[%d,%d,%d,%d]",
+                       diff_counter2, diff_frame2[0], diff_frame2[1], diff_frame2[2], diff_frame2[3]);
+                prev_head_idx = capture_head_idx;
+                capture_head_idx = compute_head_idx(diff_frame2,
+                                                    sizeof(diff_frame2) / sizeof(diff_frame2[0]),
+                                                    diff_counter2, capture_head_idx == UINT_MAX ? sel_startup_head_idx : capture_head_idx /*fallback*/);
+                syslog(LOG_CRIT, "capture_head_idx: %u, read counter= %d, curr_frame_idx=%d ", capture_head_idx, read_framecnt, curr_frame_idx);
+                diff_counter2 = 0;
+                memset(diff_frame2, 0, sizeof(diff_frame2));
+            }
+        }
         clock_gettime(CLOCK_MONOTONIC, &sel_ts_now);
         sel_now = (double)sel_ts_now.tv_sec + (double)sel_ts_now.tv_nsec / 1000000000.0;
 
-        // printf(" Selection: read_framecnt=%d, rb.tail=%d, rb.head=%d, rb.count=%d at %lf and %lf FPS.\n", read_framecnt, ring_buffer.tail_idx, ring_buffer.head_idx, ring_buffer.count, (sel_now - sel_start), (double)(read_framecnt) / (sel_now - fstart));
+        // syslog(LOG_CRIT, " Selection: read_framecnt=%d, rb.tail=%d, rb.head=%d, rb.count=%d at %lf and %lf FPS.", read_framecnt, ring_buffer.tail_idx, ring_buffer.head_idx, ring_buffer.count, (sel_now - sel_start), (double)(read_framecnt) / (sel_now - fstart));
     }
-   
+
     return read_framecnt;
 }
 
@@ -777,7 +890,7 @@ int seq_frame_process(void)
 
     // syslog(LOG_CRIT, "processing rb.tail=%d, rb.head=%d, rb.count=%d\n", ring_buffer.tail_idx, ring_buffer.head_idx, ring_buffer.count);
 
-    // ring_buffer.head_idx = (ring_buffer.head_idx + 2) % ring_buffer.ring_size;
+    // ring_buffer.head_idx = (ring_buffer.head_idx + 2) % ring_buffer.ring_size;  // reference logic from startup code
 
     if (read_framecnt > 0)
     {
@@ -785,7 +898,8 @@ int seq_frame_process(void)
         proc_start = (double)proc_ts_start.tv_sec + (double)proc_ts_start.tv_nsec / 1000000000.0;
         cnt = process_image((void *)&(ring_buffer.save_frame[ring_buffer.head_idx].frame[0]), HRES * VRES * PIXEL_SIZE);
         // ************************************************************************************************************************
-        // syslog(LOG_CRIT, "Processed frame %d from ring buffer at head index %d, whith selected to save = %d\n", process_framecnt, ring_buffer.head_idx, ring_buffer.save_frame[ring_buffer.head_idx].is_selected_to_save);
+        syslog(LOG_CRIT, "Processed frame %d from ring buffer at head index %d, whith selected to save = %d\n", process_framecnt, ring_buffer.head_idx, ring_buffer.save_frame[ring_buffer.head_idx].is_selected_to_save);
+        ring_buffer.save_frame[ring_buffer.head_idx].is_selected_to_save = false;
         // ************************************************************************************************************************
     }
     else
@@ -1359,7 +1473,8 @@ int v4l2_frame_acquisition_shutdown(void)
     printf("Total capture time=%lf, for %d frames, %lf FPS\n", (fstop - fstart), read_framecnt, ((double)read_framecnt / (fstop - fstart)));
 
     uninit_device();
-    enable_autofocus(); // restore camera default before closing fd
+    enable_autofocus(); /* restore camera defaults before closing fd */
+                        // enable_auto_exposure();
     close_device();
     fprintf(stderr, "\n");
     return 0;
