@@ -76,7 +76,7 @@
 #define ACQ_FRAMES_STORED_PER_FPS (5) // input ring buffer size should be large enough to hold at least 5 frames for each frame per second rate that we want to support, so that we can have a good chance of not losing frames while we are processing and saving frames, but also not so large that we are wasting a lot of memory on the ring buffer
 #define DRIVER_MMAP_BUFFERS (6)       // request buffers for delay
 #define RING_OUTPUT_BUFFER_SIZE (FRAMES_PER_SEC + 3)
-#define DIFF_MIN (0.45f)  // value from experiment
+#define DIFF_MIN (0.48f) // value from experiment
 #define DIFF_MAX (0.65f) // value from experiment
 
 // adjacent string literals are concatenated at compile time, so we can use this to build our log message format string
@@ -150,6 +150,7 @@ static unsigned int first_startup_head_idx = UINT_MAX;
 static unsigned int second_startup_head_idx = UINT_MAX;
 static unsigned int sel_startup_head_idx = UINT_MAX;
 static unsigned int capture_head_idx = UINT_MAX;
+static unsigned int header_idx_delay_counter = 0;
 
 static int camera_device_fd = -1;
 struct buffer *buffers;
@@ -658,29 +659,29 @@ static void disable_auto_exposure(void)
         perror("disable_auto_exposure: V4L2_CID_AUTOGAIN (may be unsupported on this camera)");
 }
 
-// we carefully adjust head_idx dependently on the pattern of 4 subsequent difference detections 
+// we carefully adjust head_idx dependently on the pattern of 4 subsequent difference detections
 static unsigned int compute_head_idx(const unsigned int *slots, int n_slots,
                                      unsigned int count, unsigned int fallback)
 {
     if (count == 1)
     {
         if (slots[0] == 1)
-            return 0;
+            return 3;
         if (slots[1] == 1)
-            return 0;
+            return 4;
         if (slots[2] == 1)
             return 1;
         if (slots[3] == 1)
-            return 2;
+            return 1;
     }
     else if (count == 2)
     {
         if (slots[0] == 1 && slots[1] == 1)
-            return 0;
+            return 4;
         if (slots[1] == 1 && slots[2] == 1)
-            return 1;
+            return 0;
         if (slots[2] == 1 && slots[3] == 1)
-            return 2;
+            return 1;
     }
     return fallback;
 }
@@ -700,12 +701,24 @@ int seq_frame_read(void)
     tv.tv_sec = 2;
     tv.tv_usec = 0;
 
-    unsigned int prev_head_idx = UINT_MAX;  // the initial value is chosen to avoid missleading with the obtained values
+    static unsigned int prev_head_idx = UINT_MAX; // the initial value is chosen to avoid missleading with the obtained values
 
     rc = select(camera_device_fd + 1, &fds, NULL, NULL, &tv);
 
-    struct timespec read_ts_start, read_ts_now;
-    double read_start, read_now;
+    if (-1 == rc)
+    {
+        if (!(EINTR == errno))
+            errno_exit("select");
+    }
+
+    if (0 == rc)
+    {
+        fprintf(stderr, "select timeout\n");
+        exit(EXIT_FAILURE);
+    }
+
+    struct timespec read_ts_start;
+    double read_start;
     clock_gettime(CLOCK_MONOTONIC, &read_ts_start);
     read_start = (double)read_ts_start.tv_sec + (double)read_ts_start.tv_nsec / 1000000000.0;
 
@@ -757,6 +770,12 @@ int seq_frame_read(void)
                                                       diff_counter, UINT_MAX /*default*/);
             syslog(LOG_CRIT, "The first startup_head_idx: %u, curr_frame_idx= %d", first_startup_head_idx, curr_frame_idx);
         }
+    }
+
+    if (read_framecnt == -4) // gap between phase 1 (ends at -5) and phase 2 (starts at -3)
+    {
+        diff_counter = 0;
+        memset(diff_frame, 0, sizeof(diff_frame));
     }
 
     if ((read_framecnt > -4 && read_framecnt < 1) && curr_frame_idx > 0)
@@ -811,14 +830,14 @@ int seq_frame_read(void)
 
         clock_gettime(CLOCK_MONOTONIC, &sel_ts_start);
         sel_start = (double)sel_ts_start.tv_sec + (double)sel_ts_start.tv_nsec / 1000000000.0;
-        // we should apply the new head idx with delay to avoid the frames with stucked second hand and jumps of the second hand 
+        // we should apply the new head idx with delay to avoid the frames with stucked second hand and jumps of the second hand
         if (capture_head_idx == UINT_MAX)
         {
             ring_buffer.save_frame[sel_startup_head_idx].is_selected_to_save = true;
             ring_buffer.head_idx = (sel_startup_head_idx) % ring_buffer.ring_size;
             prev_head_idx = sel_startup_head_idx;
         }
-        else  
+        else
         {
             if (prev_head_idx == capture_head_idx)
             {
@@ -827,7 +846,12 @@ int seq_frame_read(void)
             }
             else
             {
-                prev_head_idx = capture_head_idx;
+                if(header_idx_delay_counter > 4)
+                {
+                    prev_head_idx = capture_head_idx;
+                    header_idx_delay_counter = 0;
+                }
+                header_idx_delay_counter++;   
             }
         }
 
@@ -868,6 +892,8 @@ int seq_frame_read(void)
                 capture_head_idx = compute_head_idx(diff_frame2,
                                                     sizeof(diff_frame2) / sizeof(diff_frame2[0]),
                                                     diff_counter2, capture_head_idx == UINT_MAX ? sel_startup_head_idx : capture_head_idx /*fallback*/);
+                if (abs(prev_head_idx - capture_head_idx) > 1)  // too fast, might jump
+                    capture_head_idx = 1;
                 syslog(LOG_CRIT, "capture_head_idx: %u, read counter= %d, curr_frame_idx=%d ", capture_head_idx, read_framecnt, curr_frame_idx);
                 diff_counter2 = 0;
                 memset(diff_frame2, 0, sizeof(diff_frame2));
@@ -906,9 +932,6 @@ int seq_frame_process(void)
     {
         printf("\nNo processing because no frames have been read yet.\n");
     }
-    // ring_buffer.head_idx = (ring_buffer.head_idx + 1) % ring_buffer.ring_size;
-    ring_buffer.count = ring_buffer.count - 5; // we should process the frame which does not differ from the previous frame, so we should move the head index to the next frame which is not marked as different from the previous frame, and we should also decrease the count of frames in the ring buffer by 5 because we should have at least 5 frames in the ring buffer for each frame per second rate that we want to support, so that we can have a good chance of not losing frames while we are processing and saving frames, but also not so large that we are wasting a lot of memory on the ring buffer
-                                               // ring_buffer.head_idx = (ring_buffer.head_idx + 5) % ring_buffer.ring_size; // we should process the frame which does not differ from the previous frame, so we should move the head index to the next frame which is not marked as different from the previous frame,
 
     // syslog(LOG_CRIT, "rb.tail=%d, rb.head=%d, rb.count=%d ", ring_buffer.tail_idx, ring_buffer.head_idx, ring_buffer.count);
 
@@ -1567,8 +1590,8 @@ int seq_frame_get_for_display(unsigned char *curr_rgb,
 
     (void)diff_amplify; /* caller owns this value; parameter reserved for future use */
 
-    t = ring_buffer.tail_idx;
-    if (t < 2)
+    t = ring_buffer.count;
+    if (t < 3)
         return -1;
 
     ci = (t - 1 + (int)ring_buffer.ring_size) % (int)ring_buffer.ring_size;
