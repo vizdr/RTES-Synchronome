@@ -668,7 +668,7 @@ void *Service_3_frame_storage(void *threadp)
         // syslog(LOG_CRIT, "S3 at 1 Hz on core %d for release %llu @ sec=%6.9lf", sched_getcpu(), S3Cnt, current_realtime - start_realtime);
 
         // after last write, set synchronous abort
-        if (store_cnt == 31)
+        if (store_cnt == 61)
         {
             abortTest = TRUE;
         };
