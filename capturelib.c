@@ -143,8 +143,8 @@ bool is_scratchpad_buffer_in_use = false;                              // this i
 
 static unsigned int diff_counter = 0;
 static unsigned int diff_counter2 = 0;
-static unsigned int diff_frame[4] = {0, 0, 0, 0};
-static unsigned int diff_frame2[4] = {0, 0, 0, 0};
+static double diff_frame[4] = {0.0, 0.0, 0.0, 0.0};
+static double diff_frame2[4] = {0.0, 0.0, 0.0, 0.0};
 
 static unsigned int first_startup_head_idx = UINT_MAX;
 static unsigned int second_startup_head_idx = UINT_MAX;
@@ -660,28 +660,39 @@ static void disable_auto_exposure(void)
 }
 
 // we carefully adjust head_idx dependently on the pattern of 4 subsequent difference detections
-static unsigned int compute_head_idx(const unsigned int *slots, int n_slots,
+static unsigned int compute_head_idx(const double *slots, int n_slots,
                                      unsigned int count, unsigned int fallback)
 {
     if (count == 1)
     {
-        if (slots[0] == 1)
+        if (slots[0] > 0)
             return 3;
-        if (slots[1] == 1)
-            return 4;
-        if (slots[2] == 1)
+        if (slots[1] > 0)
+            return 0;
+        if (slots[2] > 0)
             return 1;
-        if (slots[3] == 1)
+        if (slots[3] > 0)
             return 1;
     }
     else if (count == 2)
     {
-        if (slots[0] == 1 && slots[1] == 1)
-            return 4;
-        if (slots[1] == 1 && slots[2] == 1)
-            return 0;
-        if (slots[2] == 1 && slots[3] == 1)
-            return 1;
+        if (slots[0] > 0 && slots[1] > 0)
+            {
+                if(slots[0] > slots[1])
+                  return 3;
+                else
+                  return 0;
+            }
+        if (slots[1] > 0 && slots[2] > 0)
+            if(slots[1] > slots[2])
+                  return 0;
+                else
+                  return 1;
+        if (slots[2] > 0 && slots[3] > 0)
+            if(slots[2] > slots[3])
+                  return 0;
+                else
+                  return 1;
     }
     return fallback;
 }
@@ -758,12 +769,12 @@ int seq_frame_read(void)
         if (frame_diff_pers > DIFF_MIN && frame_diff_pers < DIFF_MAX) // values from experiment
         {
             int slot = read_framecnt + 8; // -8→0, -7→1, -6→2, -5→3
-            diff_frame[slot] = 1;
+            diff_frame[slot] = frame_diff_pers;
             diff_counter++;
         }
         if (read_framecnt == -5)
         {
-            syslog(LOG_CRIT, "the first startup: diff_counter=%d, slots=[%d,%d,%d,%d]",
+            syslog(LOG_CRIT, "the first startup: diff_counter=%d, slots=[%lf,%lf,%lf,%lf]",
                    diff_counter, diff_frame[0], diff_frame[1], diff_frame[2], diff_frame[3]);
             first_startup_head_idx = compute_head_idx(diff_frame,
                                                       sizeof(diff_frame) / sizeof(diff_frame[0]),
@@ -786,12 +797,12 @@ int seq_frame_read(void)
         if (frame_diff_pers > DIFF_MIN && frame_diff_pers < DIFF_MAX) // values from experiment
         {
             int slot = read_framecnt + 3; // -3→0, -2→1, -1→2, 0→3
-            diff_frame[slot] = 1;
+            diff_frame[slot] = frame_diff_pers;
             diff_counter++;
         }
         if (read_framecnt == 0)
         {
-            syslog(LOG_CRIT, "The second startup: diff_counter=%d, slots=[%d,%d,%d,%d]",
+            syslog(LOG_CRIT, "The second startup: diff_counter=%d, slots=[%lf,%lf,%lf,%lf]",
                    diff_counter, diff_frame[0], diff_frame[1], diff_frame[2], diff_frame[3]);
             second_startup_head_idx = compute_head_idx(diff_frame,
                                                        sizeof(diff_frame) / sizeof(diff_frame[0]),
@@ -871,10 +882,10 @@ int seq_frame_read(void)
                 // syslog(LOG_CRIT, "Frame at tail of ring buffer %d is not the same as previous frame, marked.\n", curr_frame_idx);
                 // **************************************************************************************
                 syslog(LOG_CRIT, "Difference in frame %d : %lf detectecd, read counter: %d", curr_frame_idx, frame_diff_pers, read_framecnt);
-                // syslog(LOG_CRIT, "BEFORE Frame: %d, diff_counter2= %d, diff_frame2: [%d, %d, %d, %d]", read_framecnt, diff_counter2, diff_frame2[0], diff_frame2[1], diff_frame2[2], diff_frame2[3]);
+                // syslog(LOG_CRIT, "BEFORE Frame: %d, diff_counter2= %d, diff_frame2: [%lf, %lf, %lf, %lf]", read_framecnt, diff_counter2, diff_frame2[0], diff_frame2[1], diff_frame2[2], diff_frame2[3]);
 
                 int slot = curr_frame_idx - 1; // 1→0, 2→1, 3→2, 4→3
-                diff_frame2[slot] = 1;
+                diff_frame2[slot] = frame_diff_pers;
                 diff_counter2++;
             }
             else
@@ -886,14 +897,12 @@ int seq_frame_read(void)
             }
             if (curr_frame_idx == ring_buffer.ring_size - 1) // we are at the end of period
             {
-                syslog(LOG_CRIT, "capture: diff_counter2=%d, slots=[%d,%d,%d,%d]",
+                syslog(LOG_CRIT, "capture: diff_counter2=%d, slots=[%lf,%lf,%lf,%lf]",
                        diff_counter2, diff_frame2[0], diff_frame2[1], diff_frame2[2], diff_frame2[3]);
                 prev_head_idx = capture_head_idx;
                 capture_head_idx = compute_head_idx(diff_frame2,
                                                     sizeof(diff_frame2) / sizeof(diff_frame2[0]),
                                                     diff_counter2, capture_head_idx == UINT_MAX ? sel_startup_head_idx : capture_head_idx /*fallback*/);
-                if (abs(prev_head_idx - capture_head_idx) > 1)  // too fast, might jump
-                    capture_head_idx = 1;
                 syslog(LOG_CRIT, "capture_head_idx: %u, read counter= %d, curr_frame_idx=%d ", capture_head_idx, read_framecnt, curr_frame_idx);
                 diff_counter2 = 0;
                 memset(diff_frame2, 0, sizeof(diff_frame2));
