@@ -22,6 +22,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <stdbool.h>
+#include <limits.h>
 
 #include <pthread.h>
 #include <sched.h>
@@ -107,8 +108,8 @@ void Sequencer(int id);
 
 void *Service_1_frame_acquisition(void *threadp);
 void *Service_2_frame_process(void *threadp);
-void *Service_3_frame_storage(void *threadp);
-void *Service_5_frame_filter(void *threadp);
+void *Service_3_frame_filter(void *threadp);
+void *Service_5_frame_storage(void *threadp);
 void *Service_6_keyboard_reader(void *threadp);
 
 #if VIEWER_ENABLE
@@ -353,7 +354,7 @@ void main(void)
     //
     rt_param[2].sched_priority = rt_max_prio - 3;
     pthread_attr_setschedparam(&rt_sched_attr[2], &rt_param[2]);
-    rc = pthread_create(&threads[2], &rt_sched_attr[2], Service_3_frame_storage, (void *)&(threadParams[2]));
+    rc = pthread_create(&threads[2], &rt_sched_attr[2], Service_3_frame_filter, (void *)&(threadParams[2]));
     if (rc < 0)
         perror("pthread_create for service 3 - flash frame storage");
     else
@@ -397,7 +398,7 @@ void main(void)
     //
     rt_param[3].sched_priority = rt_max_prio - 4;
     pthread_attr_setschedparam(&rt_sched_attr[3], &rt_param[3]);
-    rc = pthread_create(&threads[3], &rt_sched_attr[3], Service_5_frame_filter, (void *)&(threadParams[3]));
+    rc = pthread_create(&threads[3], &rt_sched_attr[3], Service_5_frame_storage, (void *)&(threadParams[3]));
     if (rc < 0)
         perror("pthread_create for service 5 - filter frame");
     else
@@ -584,7 +585,11 @@ void *Service_1_frame_acquisition(void *threadp)
         S1Cnt++;
 
         // DO WORK - acquire V4L2 frame here or OpenCV frame here
-        seq_frame_read();
+        if (seq_frame_read() == INT_MIN)
+        {
+            syslog(LOG_CRIT, "The frame differnce detection is unsafe. Abort." );
+            abortTest = TRUE;
+        }
 
         // on order of up to milliseconds of latency to get time
         clock_gettime(MY_CLOCK_TYPE, &current_time_val);
@@ -637,51 +642,8 @@ void *Service_2_frame_process(void *threadp)
     pthread_exit((void *)0);
 }
 
-void *Service_3_frame_storage(void *threadp)
-{
-    struct timespec current_time_val;
-    double current_realtime;
-    unsigned long long S3Cnt = 0;
-    int store_cnt;
-    threadParams_t *threadParams = (threadParams_t *)threadp;
-    printf("\nFrame storage thread running on CPU=%d \n", sched_getcpu());
-    clock_gettime(MY_CLOCK_TYPE, &current_time_val);
-    current_realtime = realtime(&current_time_val);
-    // syslog(LOG_CRIT, "S3 thread @ sec=%6.9lf\n", current_realtime - start_realtime);
-
-    // to avoid zero-fill allocation
-    stack_prefault();
-
-    while (!abortS3)
-    {
-        sem_wait(&semS3);
-
-        if (abortS3)
-            break;
-        S3Cnt++;
-
-        // DO WORK - store frame
-        store_cnt = seq_frame_store();
-
-        clock_gettime(MY_CLOCK_TYPE, &current_time_val);
-        current_realtime = realtime(&current_time_val);
-        // syslog(LOG_CRIT, "S3 at 1 Hz on core %d for release %llu @ sec=%6.9lf", sched_getcpu(), S3Cnt, current_realtime - start_realtime);
-
-        // after last write, set synchronous abort
-        if (store_cnt == 61)
-        {
-            abortTest = TRUE;
-        };
-    }
-
-    pthread_exit((void *)0);
-}
-
-// Service_4 is the viewer thread which runs on a separate non-RT core and is triggered at the same cadence as Service_1 (frame acquisition).
-// Thread function is defined after Service_5 to keep all RT services together
-
-// Service_5 for applying a filter to the current frame
-void *Service_5_frame_filter(void *threadp)
+// Service_3 for applying a filter to the current frame
+void *Service_3_frame_filter(void *threadp)
 {
     struct timespec current_time_val;
     double current_realtime;
@@ -727,6 +689,49 @@ void *Service_5_frame_filter(void *threadp)
 
         // after last write, set synchronous abort
         if (filter_cnt == 1802)
+        {
+            abortTest = TRUE;
+        };
+    }
+
+    pthread_exit((void *)0);
+}
+
+// Service_4 is the viewer thread which runs on a separate non-RT core and is triggered at the same cadence as Service_1 (frame acquisition).
+// Thread function is defined after Service_5 to keep all RT services together
+
+void *Service_5_frame_storage(void *threadp)
+{
+    struct timespec current_time_val;
+    double current_realtime;
+    unsigned long long S3Cnt = 0;
+    int store_cnt;
+    threadParams_t *threadParams = (threadParams_t *)threadp;
+    printf("\nFrame storage thread running on CPU=%d \n", sched_getcpu());
+    clock_gettime(MY_CLOCK_TYPE, &current_time_val);
+    current_realtime = realtime(&current_time_val);
+    // syslog(LOG_CRIT, "S3 thread @ sec=%6.9lf\n", current_realtime - start_realtime);
+
+    // to avoid zero-fill allocation
+    stack_prefault();
+
+    while (!abortS3)
+    {
+        sem_wait(&semS3);
+
+        if (abortS3)
+            break;
+        S3Cnt++;
+
+        // DO WORK - store frame
+        store_cnt = seq_frame_store();
+
+        clock_gettime(MY_CLOCK_TYPE, &current_time_val);
+        current_realtime = realtime(&current_time_val);
+        // syslog(LOG_CRIT, "S3 at 1 Hz on core %d for release %llu @ sec=%6.9lf", sched_getcpu(), S3Cnt, current_realtime - start_realtime);
+
+        // after last write, set synchronous abort
+        if (store_cnt == 181)
         {
             abortTest = TRUE;
         };

@@ -76,8 +76,9 @@
 #define ACQ_FRAMES_STORED_PER_FPS (5) // input ring buffer size should be large enough to hold at least 5 frames for each frame per second rate that we want to support, so that we can have a good chance of not losing frames while we are processing and saving frames, but also not so large that we are wasting a lot of memory on the ring buffer
 #define DRIVER_MMAP_BUFFERS (6)       // request buffers for delay
 #define RING_OUTPUT_BUFFER_SIZE (FRAMES_PER_SEC + 3)
-#define DIFF_MIN (0.48f) // value from experiment
-#define DIFF_MAX (0.65f) // value from experiment
+#define DIFF_MIN (0.46f)                   // value from experiment
+#define DIFF_MAX (0.65f)                   // value from experiment
+#define CAPTURE_HEAD_STABILITY_PERIODS (3) // require this many consecutive periods with the same computed head_idx before adopting it
 
 // adjacent string literals are concatenated at compile time, so we can use this to build our log message format string
 #define COURSE_FRM_CAPT_SYSLOG(crs, nmb) "[COURSE " crs "][" nmb "][Frame Count: %d][Image Capture Start Time: %lf seconds]"
@@ -417,9 +418,16 @@ static int process_image(const void *p, int size)
         }
         if (!is_scratchpad_buffer_in_use)
         {
-            ring_output_buffer.save_out_frame[ring_output_buffer.tail_idx].is_ready_to_save = true;
-            ring_output_buffer.tail_idx = (ring_output_buffer.tail_idx + 1) % ring_output_buffer.ring_size;
-            ring_output_buffer.count++;
+            if (ring_output_buffer.count < (int)ring_output_buffer.ring_size)
+            {
+                ring_output_buffer.save_out_frame[ring_output_buffer.tail_idx].is_ready_to_save = true;
+                ring_output_buffer.tail_idx = (ring_output_buffer.tail_idx + 1) % ring_output_buffer.ring_size;
+                ring_output_buffer.count++;
+            }
+            else
+            {
+                syslog(LOG_CRIT, "output ring buffer overflow, frame dropped");
+            }
         }
 
 #elif defined(COLOR_CONVERT_GRAY)
@@ -443,8 +451,16 @@ static int process_image(const void *p, int size)
         }
         if (!is_scratchpad_buffer_in_use)
         {
-            ring_output_buffer.save_out_frame[ring_output_buffer.tail_idx].is_ready_to_save = true;
-            ring_output_buffer.tail_idx = (ring_output_buffer.tail_idx + 1) % ring_output_buffer.ring_size;
+            if (ring_output_buffer.count < (int)ring_output_buffer.ring_size)
+            {
+                ring_output_buffer.save_out_frame[ring_output_buffer.tail_idx].is_ready_to_save = true;
+                ring_output_buffer.tail_idx = (ring_output_buffer.tail_idx + 1) % ring_output_buffer.ring_size;
+                ring_output_buffer.count++;
+            }
+            else
+            {
+                syslog(LOG_CRIT, "output ring buffer overflow, frame dropped");
+            }
         }
 #endif
     }
@@ -663,6 +679,7 @@ static void disable_auto_exposure(void)
 static unsigned int compute_head_idx(const double *slots, int n_slots,
                                      unsigned int count, unsigned int fallback)
 {
+    static long thres = 0.06; // threshold
     if (count == 1)
     {
         if (slots[0] > 0)
@@ -677,22 +694,43 @@ static unsigned int compute_head_idx(const double *slots, int n_slots,
     else if (count == 2)
     {
         if (slots[0] > 0 && slots[1] > 0)
-            {
-                if(slots[0] > slots[1])
-                  return 3;
-                else
-                  return 0;
-            }
+        {
+            if (slots[0] > slots[1])
+                return 3;
+            else
+                return 0;
+        }
         if (slots[1] > 0 && slots[2] > 0)
-            if(slots[1] > slots[2])
-                  return 0;
-                else
-                  return 1;
+            if (slots[1] > slots[2])
+                return 0;
+            else
+                return 1;
         if (slots[2] > 0 && slots[3] > 0)
-            if(slots[2] > slots[3])
-                  return 0;
-                else
-                  return 1;
+            if (slots[2] > slots[3])
+                return 0;
+            else
+                return 1;
+    }
+    else if (count == 3)
+    {
+        if (slots[0] > 0 && slots[1] > 0 && slots[2] > 0)
+        {
+            if ((slots[0] > (slots[1] + thres)) && (slots[0] > (slots[2] + thres)))
+                return 3;
+            else if ((slots[1] > (slots[0] + thres)) && (slots[1] > (slots[2] + thres)))
+                return 0;
+            else if ((slots[2] > (slots[0] + thres)) && (slots[2] > (slots[2] + thres)))
+                return 0;
+        }
+        if (slots[1] > 0 && slots[2] > 0 && slots[3] > 0)
+        {
+            if ((slots[1] > (slots[2] + thres)) && (slots[1] > (slots[3] + thres)))
+                return 0;
+            else if ((slots[2] > (slots[1] + thres)) && (slots[2] > (slots[3] + thres)))
+                return 0;
+            else if ((slots[3] > (slots[1] + thres)) && (slots[3] > (slots[2] + thres)))
+                return 1;
+        }
     }
     return fallback;
 }
@@ -712,8 +750,10 @@ int seq_frame_read(void)
     tv.tv_sec = 2;
     tv.tv_usec = 0;
 
-    static unsigned int prev_head_idx = UINT_MAX; // the initial value is chosen to avoid missleading with the obtained values
-
+    static unsigned int prev_head_idx = UINT_MAX;
+    static unsigned int pending_capture_head_idx = UINT_MAX;
+    static unsigned int pending_capture_count = 0;
+    int is_read_unsafe = INT_MIN;
     rc = select(camera_device_fd + 1, &fds, NULL, NULL, &tv);
 
     if (-1 == rc)
@@ -857,18 +897,24 @@ int seq_frame_read(void)
             }
             else
             {
-                if(header_idx_delay_counter > 4)
+                if (header_idx_delay_counter > 4)
                 {
                     prev_head_idx = capture_head_idx;
                     header_idx_delay_counter = 0;
                 }
-                header_idx_delay_counter++;   
+                header_idx_delay_counter++;
             }
         }
 
         // curr_frame_idx should be more than 1 here because we skip the first few frames
         if (curr_frame_idx > 0)
         {
+            // too scared enironment, abort
+            if ((second_startup_head_idx == UINT_MAX) && (first_startup_head_idx == UINT_MAX) && (read_framecnt == 30))
+            {
+                syslog(LOG_CRIT, "Unsafe frame detection. Frame: %d", read_framecnt);
+                is_read_unsafe++;
+            }
 
             diffsum = frame_diff_yuyv((void *)&(ring_buffer.save_frame[curr_frame_idx].frame[0]), (void *)&(ring_buffer.save_frame[curr_frame_idx - 1].frame[0]), HRES, VRES);
             frame_diff_pers = frame_percent_diff(diffsum, HRES, VRES, false);
@@ -899,11 +945,24 @@ int seq_frame_read(void)
             {
                 syslog(LOG_CRIT, "capture: diff_counter2=%d, slots=[%lf,%lf,%lf,%lf]",
                        diff_counter2, diff_frame2[0], diff_frame2[1], diff_frame2[2], diff_frame2[3]);
-                prev_head_idx = capture_head_idx;
-                capture_head_idx = compute_head_idx(diff_frame2,
-                                                    sizeof(diff_frame2) / sizeof(diff_frame2[0]),
-                                                    diff_counter2, capture_head_idx == UINT_MAX ? sel_startup_head_idx : capture_head_idx /*fallback*/);
-                syslog(LOG_CRIT, "capture_head_idx: %u, read counter= %d, curr_frame_idx=%d ", capture_head_idx, read_framecnt, curr_frame_idx);
+                unsigned int computed_idx = compute_head_idx(diff_frame2,
+                                                             sizeof(diff_frame2) / sizeof(diff_frame2[0]),
+                                                             diff_counter2, capture_head_idx == UINT_MAX ? sel_startup_head_idx : capture_head_idx /*fallback*/);
+                if (computed_idx == pending_capture_head_idx)
+                {
+                    pending_capture_count++;
+                    if (pending_capture_count >= CAPTURE_HEAD_STABILITY_PERIODS && capture_head_idx != computed_idx)
+                    {
+                        capture_head_idx = computed_idx;
+                        syslog(LOG_CRIT, "capture_head_idx stabilized at %u after %u periods, read counter= %d", capture_head_idx, pending_capture_count, read_framecnt);
+                    }
+                }
+                else
+                {
+                    pending_capture_head_idx = computed_idx;
+                    pending_capture_count = 1;
+                }
+                syslog(LOG_CRIT, "capture_head_idx: %u (pending=%u count=%u), read counter= %d, curr_frame_idx=%d", capture_head_idx, pending_capture_head_idx, pending_capture_count, read_framecnt, curr_frame_idx);
                 diff_counter2 = 0;
                 memset(diff_frame2, 0, sizeof(diff_frame2));
             }
@@ -914,7 +973,7 @@ int seq_frame_read(void)
         // syslog(LOG_CRIT, " Selection: read_framecnt=%d, rb.tail=%d, rb.head=%d, rb.count=%d at %lf and %lf FPS.", read_framecnt, ring_buffer.tail_idx, ring_buffer.head_idx, ring_buffer.count, (sel_now - sel_start), (double)(read_framecnt) / (sel_now - fstart));
     }
 
-    return read_framecnt;
+    return (is_read_unsafe > INT_MIN) ? INT_MIN : read_framecnt;
 }
 
 int seq_frame_process(void)
@@ -933,7 +992,7 @@ int seq_frame_process(void)
         proc_start = (double)proc_ts_start.tv_sec + (double)proc_ts_start.tv_nsec / 1000000000.0;
         cnt = process_image((void *)&(ring_buffer.save_frame[ring_buffer.head_idx].frame[0]), HRES * VRES * PIXEL_SIZE);
         // ************************************************************************************************************************
-        syslog(LOG_CRIT, "Processed frame %d from ring buffer at head index %d, whith selected to save = %d\n", process_framecnt, ring_buffer.head_idx, ring_buffer.save_frame[ring_buffer.head_idx].is_selected_to_save);
+        // syslog(LOG_CRIT, "Processed frame %d from ring buffer at head index %d, whith selected to save = %d\n", process_framecnt, ring_buffer.head_idx, ring_buffer.save_frame[ring_buffer.head_idx].is_selected_to_save);
         ring_buffer.save_frame[ring_buffer.head_idx].is_selected_to_save = false;
         // ************************************************************************************************************************
     }

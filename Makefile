@@ -3,7 +3,7 @@ LIB_DIRS =
 CC=gcc
 
 CDEFS=
-CFLAGS= -O0 -g $(INCLUDE_DIRS) $(CDEFS)
+CFLAGS= -O3 -march=armv8-a+simd -mtune=native -ftree-vectorize -fomit-frame-pointer $(INCLUDE_DIRS) $(CDEFS)
 LIBS=
 
 SDL2_CFLAGS = $(shell sdl2-config --cflags)
