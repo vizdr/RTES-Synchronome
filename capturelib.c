@@ -868,7 +868,7 @@ int seq_frame_read(void)
     }
     else
     {
-        printf("at %lf\n", fnow);
+        //syslog(LOG_CRIT, "at %lf", fnow);
     }
 
     // printf("--Acquisitation read frame at: %lf\n", (fnow - read_start));
@@ -927,7 +927,7 @@ int seq_frame_read(void)
                 // **************************************************************************************
                 // syslog(LOG_CRIT, "Frame at tail of ring buffer %d is not the same as previous frame, marked.\n", curr_frame_idx);
                 // **************************************************************************************
-                syslog(LOG_CRIT, "Difference in frame %d : %lf detectecd, read counter: %d", curr_frame_idx, frame_diff_pers, read_framecnt);
+                //syslog(LOG_CRIT, "Difference in frame %d : %lf detectecd, read counter: %d", curr_frame_idx, frame_diff_pers, read_framecnt);
                 // syslog(LOG_CRIT, "BEFORE Frame: %d, diff_counter2= %d, diff_frame2: [%lf, %lf, %lf, %lf]", read_framecnt, diff_counter2, diff_frame2[0], diff_frame2[1], diff_frame2[2], diff_frame2[3]);
 
                 int slot = curr_frame_idx - 1; // 1→0, 2→1, 3→2, 4→3
@@ -943,8 +943,8 @@ int seq_frame_read(void)
             }
             if (curr_frame_idx == ring_buffer.ring_size - 1) // we are at the end of period
             {
-                syslog(LOG_CRIT, "capture: diff_counter2=%d, slots=[%lf,%lf,%lf,%lf]",
-                       diff_counter2, diff_frame2[0], diff_frame2[1], diff_frame2[2], diff_frame2[3]);
+                //syslog(LOG_CRIT, "capture: diff_counter2= %d, slots=[ %lf,%lf,%lf,%lf ]",
+                //       diff_counter2, diff_frame2[0], diff_frame2[1], diff_frame2[2], diff_frame2[3]);
                 unsigned int computed_idx = compute_head_idx(diff_frame2,
                                                              sizeof(diff_frame2) / sizeof(diff_frame2[0]),
                                                              diff_counter2, capture_head_idx == UINT_MAX ? sel_startup_head_idx : capture_head_idx /*fallback*/);
@@ -954,7 +954,7 @@ int seq_frame_read(void)
                     if (pending_capture_count >= CAPTURE_HEAD_STABILITY_PERIODS && capture_head_idx != computed_idx)
                     {
                         capture_head_idx = computed_idx;
-                        syslog(LOG_CRIT, "capture_head_idx stabilized at %u after %u periods, read counter= %d", capture_head_idx, pending_capture_count, read_framecnt);
+                        //syslog(LOG_CRIT, "capture_head_idx stabilized at %u after %u periods, read counter= %d", capture_head_idx, pending_capture_count, read_framecnt);
                     }
                 }
                 else
@@ -962,7 +962,7 @@ int seq_frame_read(void)
                     pending_capture_head_idx = computed_idx;
                     pending_capture_count = 1;
                 }
-                syslog(LOG_CRIT, "capture_head_idx: %u (pending=%u count=%u), read counter= %d, curr_frame_idx=%d", capture_head_idx, pending_capture_head_idx, pending_capture_count, read_framecnt, curr_frame_idx);
+                //syslog(LOG_CRIT, "capture_head_idx: %u (pending=%u count=%u), read counter= %d, curr_frame_idx=%d", capture_head_idx, pending_capture_head_idx, pending_capture_count, read_framecnt, curr_frame_idx);
                 diff_counter2 = 0;
                 memset(diff_frame2, 0, sizeof(diff_frame2));
             }
@@ -1012,7 +1012,7 @@ int seq_frame_process(void)
     }
     else
     {
-        printf("at %lf\n", fnow - fstart);
+        //syslog(LOG_CRIT,"at %lf", fnow - fstart);
     }
 
     return cnt;

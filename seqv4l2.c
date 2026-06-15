@@ -22,7 +22,9 @@
 #include <string.h>
 #include <unistd.h>
 #include <stdbool.h>
-#include <limits.h>
+#include <limits.h> // for UINT_MAX, UINT_MIN
+#include <fcntl.h>  // for open(), O_WRONLY
+#include <glob.h>   // for glob()
 
 #include <pthread.h>
 #include <sched.h>
@@ -136,6 +138,52 @@ int v4l2_frame_acquisition_initialization(char *dev_name);
 int v4l2_frame_acquisition_shutdown(void);
 int v4l2_frame_acquisition_loop(char *dev_name);
 
+/* Set CPU frequency governor on all cores.
+   governor: "performance", "powersave", "ondemand", etc.
+   Returns 0 on success, -1 if no cpufreq sysfs found (e.g. governor already fixed). */
+static int set_cpu_governor(const char *governor)
+{
+    glob_t g;
+    int rc = 0;
+
+    if (glob("/sys/devices/system/cpu/cpu*/cpufreq/scaling_governor",
+             GLOB_NOSORT, NULL, &g) != 0)
+    {
+        fprintf(stderr, "set_cpu_governor: cpufreq sysfs not found (fixed freq?)\n");
+        return -1;
+    }
+
+    for (size_t i = 0; i < g.gl_pathc; i++)
+    {
+        int fd = open(g.gl_pathv[i], O_WRONLY);
+        if (fd < 0) { perror(g.gl_pathv[i]); rc = -1; continue; }
+        if (write(fd, governor, strlen(governor)) < 0)
+            { perror("write governor"); rc = -1; }
+        close(fd);
+    }
+    globfree(&g);
+    return rc;
+}
+
+/* Prevent the CPU from entering deep idle states for the lifetime of the process.
+   Keeps the fd open — pass a pointer to a static int.
+   Returns 0 on success, -1 on error. */
+static int disable_deep_idle(int *fd_out)
+{
+    int fd = open("/dev/cpu_dma_latency", O_WRONLY);
+    if (fd < 0) { perror("open /dev/cpu_dma_latency"); return -1; }
+
+    int32_t latency_us = 0;   /* 0 = no deep sleep, ever */
+    if (write(fd, &latency_us, sizeof(latency_us)) < 0)
+    {
+        perror("write cpu_dma_latency");
+        close(fd);
+        return -1;
+    }
+    *fd_out = fd;   /* must stay open — kernel resets on close */
+    return 0;
+}
+
 static void skip_filter_handler(int sig, siginfo_t *si, void *ctx)
 {
     int key = si->si_value.sival_int;
@@ -210,6 +258,11 @@ void main(void)
 
     sa.sa_sigaction = skip_filter_handler;
 
+    // write to sysfs: the kernel resets the latency constraint when the fd is closed, which is why it's stored in a static variable. It will be released automatically when the process exits
+    static int dma_lat_fd = -1;
+    set_cpu_governor("performance");
+    disable_deep_idle(&dma_lat_fd);
+
     v4l2_frame_acquisition_initialization(dev_name);
 
     // lock memory to prevent paging in this demo application which is not handling page faults in real-time safe manner
@@ -219,7 +272,7 @@ void main(void)
     // required to get camera initialized and ready
     seq_frame_read();
 
-    printf("Starting High Rate Sequencer Demo\n");
+    printf("Starting High Rate Sequencer \n");
     clock_gettime(MY_CLOCK_TYPE, &start_time_val);
     start_realtime = realtime(&start_time_val);
     clock_gettime(MY_CLOCK_TYPE, &current_time_val);
@@ -445,7 +498,7 @@ void main(void)
     sev.sigev_signo = SIGALRM;
     sev._sigev_un._tid = mainpid; // main thread TID
     sev.sigev_value.sival_ptr = &timer_1;
-    timer_create(CLOCK_REALTIME, &sev, &timer_1);
+    timer_create(CLOCK_MONOTONIC, &sev, &timer_1);
 
     signal(SIGALRM, (void (*)())Sequencer);
 
@@ -596,7 +649,7 @@ void *Service_1_frame_acquisition(void *threadp)
         current_realtime = realtime(&current_time_val);
         // syslog(LOG_CRIT, "S1 at 5 Hz on core %d for release %llu @ sec=%6.9lf", sched_getcpu(), S1Cnt, current_realtime - start_realtime);
 
-        if (S1Cnt > 2500)
+        if (S1Cnt > 9100)  /* 1801 frames × 5 Hz + startup headroom */
         {
             abortTest = TRUE;
         };
@@ -731,7 +784,7 @@ void *Service_5_frame_storage(void *threadp)
         // syslog(LOG_CRIT, "S3 at 1 Hz on core %d for release %llu @ sec=%6.9lf", sched_getcpu(), S3Cnt, current_realtime - start_realtime);
 
         // after last write, set synchronous abort
-        if (store_cnt == 181)
+        if (store_cnt == 1801)
         {
             abortTest = TRUE;
         };
