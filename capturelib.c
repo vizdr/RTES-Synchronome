@@ -679,7 +679,7 @@ static void disable_auto_exposure(void)
 static unsigned int compute_head_idx(const double *slots, int n_slots,
                                      unsigned int count, unsigned int fallback)
 {
-    static long thres = 0.06; // threshold
+    static long double thres = 0.06; // threshold
     if (count == 1)
     {
         if (slots[0] > 0)
@@ -978,7 +978,7 @@ int seq_frame_read(void)
 
 int seq_frame_process(void)
 {
-    int cnt;
+    int cnt = 0;
     struct timespec proc_ts_start, proc_ts_now;
     double proc_start, proc_now;
 
