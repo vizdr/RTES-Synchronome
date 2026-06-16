@@ -1,17 +1,20 @@
 // Sam Siewert, December 2020
+// Vladimir Zdravkov, Juni 2026
 //
 // Sequencer Generic Demonstration
 //
 // Sequencer - 100 Hz
 //                   [gives semaphores to all other services]
-// Service_1 - 25 Hz, every 4th Sequencer loop reads a V4L2 video frame
+// Service_1 - 5 Hz, every 4th Sequencer loop reads a V4L2 video frame
 // Service_2 -  1 Hz, every 100th Sequencer loop writes out the current video frame
+// ..
 //
 // With the above, priorities by RM policy would be:
 //
 // Sequencer = RT_MAX	@ 100 Hz
-// Servcie_1 = RT_MAX-1	@ 25  Hz
+// Servcie_1 = RT_MAX-1	@ 5  Hz
 // Service_2 = RT_MIN	@ 1   Hz
+// ..
 //
 
 // This is necessary for CPU affinity macros in Linux
@@ -378,7 +381,7 @@ void main(void)
     // Create Service threads which will block awaiting release for:
     //
 
-    // Servcie_1 = RT_MAX-1	@ 25 Hz
+    // Servcie_1 = RT_MAX-1	@ 5 Hz
     //
     rt_param[0].sched_priority = rt_max_prio - 1;
     pthread_attr_setschedparam(&rt_sched_attr[0], &rt_param[0]);
@@ -649,7 +652,7 @@ void *Service_1_frame_acquisition(void *threadp)
         current_realtime = realtime(&current_time_val);
         // syslog(LOG_CRIT, "S1 at 5 Hz on core %d for release %llu @ sec=%6.9lf", sched_getcpu(), S1Cnt, current_realtime - start_realtime);
 
-        if (S1Cnt > 9100)  /* 1801 frames × 5 Hz + startup headroom */
+        if (S1Cnt > 9100)  /* 1801 frames × (5 Hz / 1 Hz) + startup headroom */
         {
             abortTest = TRUE;
         };
