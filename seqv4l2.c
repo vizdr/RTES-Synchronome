@@ -1,17 +1,20 @@
 // Sam Siewert, December 2020
+// Vladimir Zdravkov, Juni 2026
 //
-// Sequencer Generic Demonstration
+// Sequencer RTES Project
 //
-// Sequencer - 100 Hz
+// Sequencer - 120 Hz
 //                   [gives semaphores to all other services]
-// Service_1 - 25 Hz, every 4th Sequencer loop reads a V4L2 video frame
-// Service_2 -  1 Hz, every 100th Sequencer loop writes out the current video frame
+// Service_1 - 20 Hz, every 6th Sequencer loop reads a V4L2 video frame
+// Service_2 -  10 Hz, every 12th Sequencer loop writes out the current video frame
+// ..
 //
 // With the above, priorities by RM policy would be:
 //
-// Sequencer = RT_MAX	@ 100 Hz
-// Servcie_1 = RT_MAX-1	@ 25  Hz
-// Service_2 = RT_MIN	@ 1   Hz
+// Sequencer = RT_MAX	@ 120 Hz
+// Servcie_1 = RT_MAX-1	@ 20  Hz
+// Service_2 = RT_MIN	@ 10   Hz
+// ..
 //
 
 // This is necessary for CPU affinity macros in Linux
@@ -378,7 +381,7 @@ void main(void)
     // Create Service threads which will block awaiting release for:
     //
 
-    // Servcie_1 = RT_MAX-1	@ 25 Hz
+    // Servcie_1 = RT_MAX-1	@ 20 Hz
     //
     rt_param[0].sched_priority = rt_max_prio - 1;
     pthread_attr_setschedparam(&rt_sched_attr[0], &rt_param[0]);
@@ -393,7 +396,7 @@ void main(void)
     else
         printf("pthread_create successful for service 1\n");
 
-    // Service_2 = RT_MAX-2	@ 1 Hz
+    // Service_2 = RT_MAX-2	@ 10 Hz
     //
     rt_param[1].sched_priority = rt_max_prio - 2;
     pthread_attr_setschedparam(&rt_sched_attr[1], &rt_param[1]);
@@ -403,7 +406,7 @@ void main(void)
     else
         printf("pthread_create successful for service 2\n");
 
-    // Service_3 = RT_MAX-3	@ 1 Hz
+    // Service_3 = RT_MAX-3	@ 10 Hz
     //
     rt_param[2].sched_priority = rt_max_prio - 3;
     pthread_attr_setschedparam(&rt_sched_attr[2], &rt_param[2]);
@@ -414,7 +417,7 @@ void main(void)
         printf("pthread_create successful for service 3\n");
 
 #if VIEWER_ENABLE
-    // Service_4 = SCHED_OTHER prio=0 @ 5 Hz, pinned to VIEWER_CORE.
+    // Service_4 = SCHED_OTHER prio=0 @ 20 Hz, pinned to VIEWER_CORE.
     // SDL2 is not RT-safe; a dedicated non-RT core isolates display stalls
     // from the RT capture pipeline on RT_CORE.
     {
@@ -447,7 +450,7 @@ void main(void)
     }
 #endif
 
-    // Service_5 = RT_MAX-3	@ 1 Hz
+    // Service_5 = RT_MAX-3	@ 10 Hz
     //
     rt_param[3].sched_priority = rt_max_prio - 4;
     pthread_attr_setschedparam(&rt_sched_attr[3], &rt_param[3]);
@@ -465,7 +468,7 @@ void main(void)
     //
     // sleep(1);
 
-    // Service_6 SCHED_OTHER prio=0 @ 1 Hz, for keyboard reading to trigger synchronous abort of the test.
+    // Service_6 SCHED_OTHER prio=0 @ 10 Hz, for keyboard reading to trigger synchronous abort of the test.
     pthread_attr_t key_read_attr;
     struct sched_param key_read_param;
     cpu_set_t viewercpu;
@@ -490,7 +493,7 @@ void main(void)
     // Create Sequencer thread, which like a cyclic executive, is highest prio
     printf("Start sequencer\n");
 
-    // Sequencer = RT_MAX	@ 100 Hz
+    // Sequencer = RT_MAX	@ 120 Hz
     //
     /* set up to signal SIGALRM if timer expires */
     struct sigevent sev;
@@ -584,32 +587,32 @@ void Sequencer(int id)
 
     // Release each service at a sub-rate of the generic sequencer rate
 
-    // Servcie_1 @ 5 Hz
-    if ((seqCnt % 20) == 0)
+    // Servcie_1 @ 20 Hz
+    if ((seqCnt % 6) == 0)
         sem_post(&semS1);
 
-    // Service_2 @ 1 Hz
-    if ((seqCnt % 100) == 0)
+    // Service_2 @ 10 Hz
+    if ((seqCnt % 12) == 0)
         sem_post(&semS2);
 
-    // Service_3 @ 1 Hz
-    if ((seqCnt % 100) == 0)
+    // Service_3 @ 10 Hz
+    if ((seqCnt % 12) == 0)
         sem_post(&semS3);
 
 #if VIEWER_ENABLE
-    // Service_4 (Viewer) @ 5 Hz — same cadence as Service_1 (frame acquisition).
+    // Service_4 (Viewer) @ 20 Hz — same cadence as Service_1 (frame acquisition).
     // Service_1 is higher priority and runs on RT_CORE first; by the time Service_4
     // wakes on VIEWER_CORE the ring buffer slot it reads is already complete.
-    if ((seqCnt % 20) == 0)
+    if ((seqCnt % 6) == 0)
         sem_post(&semS4);
 #endif
 
-    // Service_5 @ 1 Hz
-    if ((seqCnt % 100) == 0)
+    // Service_5 @ 10 Hz
+    if ((seqCnt % 12) == 0)
         sem_post(&semS5);
 
-    // Service_6 @ 1 Hz
-    if ((seqCnt % 100) == 0)
+    // Service_6 @ 10 Hz
+    if ((seqCnt % 12) == 0)
         sem_post(&semS6);
 }
 
@@ -647,9 +650,9 @@ void *Service_1_frame_acquisition(void *threadp)
         // on order of up to milliseconds of latency to get time
         clock_gettime(MY_CLOCK_TYPE, &current_time_val);
         current_realtime = realtime(&current_time_val);
-        // syslog(LOG_CRIT, "S1 at 5 Hz on core %d for release %llu @ sec=%6.9lf", sched_getcpu(), S1Cnt, current_realtime - start_realtime);
+        // syslog(LOG_CRIT, "S1 at 20 Hz on core %d for release %llu @ sec=%6.9lf", sched_getcpu(), S1Cnt, current_realtime - start_realtime);
 
-        if (S1Cnt > 9100)  /* 1801 frames × 5 Hz + startup headroom */
+        if (S1Cnt > 9100)  /* 1801 frames × 20 Hz + startup headroom */
         {
             abortTest = TRUE;
         };
@@ -689,7 +692,7 @@ void *Service_2_frame_process(void *threadp)
 
         clock_gettime(MY_CLOCK_TYPE, &current_time_val);
         current_realtime = realtime(&current_time_val);
-        // syslog(LOG_CRIT, "S2 at 1 Hz on core %d for release %llu @ sec=%6.9lf", sched_getcpu(), S2Cnt, current_realtime - start_realtime);
+        // syslog(LOG_CRIT, "S2 at 10 Hz on core %d for release %llu @ sec=%6.9lf", sched_getcpu(), S2Cnt, current_realtime - start_realtime);
     }
 
     pthread_exit((void *)0);
@@ -738,7 +741,7 @@ void *Service_3_frame_filter(void *threadp)
 
         clock_gettime(MY_CLOCK_TYPE, &current_time_val);
         current_realtime = realtime(&current_time_val);
-        // syslog(LOG_CRIT, "S5 at 1 Hz on core %d for release %llu @ sec=%6.9lf", sched_getcpu(), S5Cnt, current_realtime - start_realtime);
+        // syslog(LOG_CRIT, "S5 at 10 Hz on core %d for release %llu @ sec=%6.9lf", sched_getcpu(), S5Cnt, current_realtime - start_realtime);
 
         // after last write, set synchronous abort
         if (filter_cnt == 1802)
@@ -781,7 +784,7 @@ void *Service_5_frame_storage(void *threadp)
 
         clock_gettime(MY_CLOCK_TYPE, &current_time_val);
         current_realtime = realtime(&current_time_val);
-        // syslog(LOG_CRIT, "S3 at 1 Hz on core %d for release %llu @ sec=%6.9lf", sched_getcpu(), S3Cnt, current_realtime - start_realtime);
+        // syslog(LOG_CRIT, "S3 at 10 Hz on core %d for release %llu @ sec=%6.9lf", sched_getcpu(), S3Cnt, current_realtime - start_realtime);
 
         // after last write, set synchronous abort
         if (store_cnt == 1801)
