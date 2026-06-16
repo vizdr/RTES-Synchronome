@@ -64,8 +64,8 @@
 #define FRAMES_TO_ACQUIRE (CAPTURE_FRAMES + STARTUP_FRAMES + LAST_FRAMES)
 #define FRAMES_TO_SKIP (1)
 
-#define FRAMES_PER_SEC (1)
-// #define FRAMES_PER_SEC (10)
+// #define FRAMES_PER_SEC (1)
+#define FRAMES_PER_SEC (10)
 // #define FRAMES_PER_SEC (20)
 // #define FRAMES_PER_SEC (25)
 // #define FRAMES_PER_SEC (30)
@@ -73,10 +73,11 @@
 #define COLOR_CONVERT_RGB
 // #define COLOR_CONVERT_GRAY
 #define DUMP_FRAMES
-#define ACQ_FRAMES_STORED_PER_FPS (5) // input ring buffer size should be large enough to hold at least 5 frames for each frame per second rate that we want to support, so that we can have a good chance of not losing frames while we are processing and saving frames, but also not so large that we are wasting a lot of memory on the ring buffer
+#define RING_BUF_RESERVE_FRAMES (3)
+#define FRAMES_PER_ACQ_PERIOD (3) // input ring buffer size should be large enough, so that we can have a good chance of not losing frames while we are processing and saving frames, but also not so large that we are wasting a lot of memory on the ring buffer
 #define DRIVER_MMAP_BUFFERS (6)       // request buffers for delay
-#define RING_OUTPUT_BUFFER_SIZE (FRAMES_PER_SEC + 3)
-#define DIFF_MIN (0.46f)                   // value from experiment
+#define RING_OUTPUT_BUFFER_SIZE (FRAMES_PER_ACQ_PERIOD + RING_BUF_RESERVE_FRAMES)
+#define DIFF_MIN (0.45f)                   // value from experiment
 #define DIFF_MAX (0.65f)                   // value from experiment
 #define CAPTURE_HEAD_STABILITY_PERIODS (3) // require this many consecutive periods with the same computed head_idx before adopting it
 
@@ -112,7 +113,7 @@ struct ring_buffer_t
     unsigned int head_idx;
     int count;
 
-    struct save_frame_t save_frame[ACQ_FRAMES_STORED_PER_FPS * FRAMES_PER_SEC];
+    struct save_frame_t save_frame[FRAMES_PER_ACQ_PERIOD * FRAMES_PER_SEC];
 };
 
 static struct ring_buffer_t ring_buffer;
@@ -134,7 +135,7 @@ struct ring_out_buffer_t
     unsigned int head_idx;
     int count;
 
-    struct save_out_frame_t save_out_frame[ACQ_FRAMES_STORED_PER_FPS * FRAMES_PER_SEC];
+    struct save_out_frame_t save_out_frame[FRAMES_PER_ACQ_PERIOD * FRAMES_PER_SEC];
 };
 
 static struct ring_out_buffer_t ring_output_buffer;
@@ -144,8 +145,8 @@ bool is_scratchpad_buffer_in_use = false;                              // this i
 
 static unsigned int diff_counter = 0;
 static unsigned int diff_counter2 = 0;
-static double diff_frame[4] = {0.0, 0.0, 0.0, 0.0};
-static double diff_frame2[4] = {0.0, 0.0, 0.0, 0.0};
+static double diff_frame[2] = {0.0, 0.0};
+static double diff_frame2[2] = {0.0, 0.0};
 
 static unsigned int first_startup_head_idx = UINT_MAX;
 static unsigned int second_startup_head_idx = UINT_MAX;
@@ -679,59 +680,24 @@ static void disable_auto_exposure(void)
 static unsigned int compute_head_idx(const double *slots, int n_slots,
                                      unsigned int count, unsigned int fallback)
 {
-    static long thres = 0.06; // threshold
+    static long double thres = 0.06; // threshold
     if (count == 1)
     {
         if (slots[0] > 0)
-            return 3;
-        if (slots[1] > 0)
             return 0;
-        if (slots[2] > 0)
-            return 1;
-        if (slots[3] > 0)
+        if (slots[1] > 0)
             return 1;
     }
     else if (count == 2)
     {
-        if (slots[0] > 0 && slots[1] > 0)
+        if (slots[0] > (slots[1] + thres))
         {
-            if (slots[0] > slots[1])
-                return 3;
-            else
                 return 0;
         }
-        if (slots[1] > 0 && slots[2] > 0)
-            if (slots[1] > slots[2])
-                return 0;
-            else
-                return 1;
-        if (slots[2] > 0 && slots[3] > 0)
-            if (slots[2] > slots[3])
-                return 0;
-            else
+        if (slots[1] >  (slots[0] + thres))
                 return 1;
     }
-    else if (count == 3)
-    {
-        if (slots[0] > 0 && slots[1] > 0 && slots[2] > 0)
-        {
-            if ((slots[0] > (slots[1] + thres)) && (slots[0] > (slots[2] + thres)))
-                return 3;
-            else if ((slots[1] > (slots[0] + thres)) && (slots[1] > (slots[2] + thres)))
-                return 0;
-            else if ((slots[2] > (slots[0] + thres)) && (slots[2] > (slots[2] + thres)))
-                return 0;
-        }
-        if (slots[1] > 0 && slots[2] > 0 && slots[3] > 0)
-        {
-            if ((slots[1] > (slots[2] + thres)) && (slots[1] > (slots[3] + thres)))
-                return 0;
-            else if ((slots[2] > (slots[1] + thres)) && (slots[2] > (slots[3] + thres)))
-                return 0;
-            else if ((slots[3] > (slots[1] + thres)) && (slots[3] > (slots[2] + thres)))
-                return 1;
-        }
-    }
+    
     return fallback;
 }
 
@@ -801,21 +767,21 @@ int seq_frame_read(void)
     }
     // we try to determine correct startup head_idx two times to launch frame processing with the appropriate head_idx
     // it is attempt to avoid blur of the second hand on the saved frames
-    if ((read_framecnt > -9 && read_framecnt < -4) && curr_frame_idx > 0)
+    if ((read_framecnt > -5 && read_framecnt < -2) && curr_frame_idx > 0)
     {
 
         diffsum = frame_diff_yuyv((void *)&(ring_buffer.save_frame[curr_frame_idx].frame[0]), (void *)&(ring_buffer.save_frame[curr_frame_idx - 1].frame[0]), HRES, VRES);
         frame_diff_pers = frame_percent_diff(diffsum, HRES, VRES, false);
         if (frame_diff_pers > DIFF_MIN && frame_diff_pers < DIFF_MAX) // values from experiment
         {
-            int slot = read_framecnt + 8; // -8→0, -7→1, -6→2, -5→3
+            int slot = read_framecnt + 4; // -4→0, -3→1
             diff_frame[slot] = frame_diff_pers;
             diff_counter++;
         }
-        if (read_framecnt == -5)
+        if (read_framecnt == -3)  // we are at end of the range
         {
-            syslog(LOG_CRIT, "the first startup: diff_counter=%d, slots=[%lf,%lf,%lf,%lf]",
-                   diff_counter, diff_frame[0], diff_frame[1], diff_frame[2], diff_frame[3]);
+            syslog(LOG_CRIT, "the first startup: diff_counter=%d, slots=[%lf,%lf]",
+                   diff_counter, diff_frame[0], diff_frame[1]);
             first_startup_head_idx = compute_head_idx(diff_frame,
                                                       sizeof(diff_frame) / sizeof(diff_frame[0]),
                                                       diff_counter, UINT_MAX /*default*/);
@@ -823,27 +789,27 @@ int seq_frame_read(void)
         }
     }
 
-    if (read_framecnt == -4) // gap between phase 1 (ends at -5) and phase 2 (starts at -3)
+    if (read_framecnt == -2) // gap between phase 1 (ends at -3) and phase 2 (starts at -1)
     {
         diff_counter = 0;
         memset(diff_frame, 0, sizeof(diff_frame));
     }
 
-    if ((read_framecnt > -4 && read_framecnt < 1) && curr_frame_idx > 0)
+    if ((read_framecnt > -2 && read_framecnt < 1) && curr_frame_idx > 0)
     {
 
         diffsum = frame_diff_yuyv((void *)&(ring_buffer.save_frame[curr_frame_idx].frame[0]), (void *)&(ring_buffer.save_frame[curr_frame_idx - 1].frame[0]), HRES, VRES);
         frame_diff_pers = frame_percent_diff(diffsum, HRES, VRES, false);
         if (frame_diff_pers > DIFF_MIN && frame_diff_pers < DIFF_MAX) // values from experiment
         {
-            int slot = read_framecnt + 3; // -3→0, -2→1, -1→2, 0→3
+            int slot = read_framecnt + 1; // -1→0, 0→1
             diff_frame[slot] = frame_diff_pers;
             diff_counter++;
         }
         if (read_framecnt == 0)
         {
-            syslog(LOG_CRIT, "The second startup: diff_counter=%d, slots=[%lf,%lf,%lf,%lf]",
-                   diff_counter, diff_frame[0], diff_frame[1], diff_frame[2], diff_frame[3]);
+            syslog(LOG_CRIT, "The second startup: diff_counter=%d, slots=[%lf,%lf]",
+                   diff_counter, diff_frame[0], diff_frame[1]);
             second_startup_head_idx = compute_head_idx(diff_frame,
                                                        sizeof(diff_frame) / sizeof(diff_frame[0]),
                                                        diff_counter, UINT_MAX /*default*/);
@@ -930,7 +896,7 @@ int seq_frame_read(void)
                 //syslog(LOG_CRIT, "Difference in frame %d : %lf detectecd, read counter: %d", curr_frame_idx, frame_diff_pers, read_framecnt);
                 // syslog(LOG_CRIT, "BEFORE Frame: %d, diff_counter2= %d, diff_frame2: [%lf, %lf, %lf, %lf]", read_framecnt, diff_counter2, diff_frame2[0], diff_frame2[1], diff_frame2[2], diff_frame2[3]);
 
-                int slot = curr_frame_idx - 1; // 1→0, 2→1, 3→2, 4→3
+                int slot = curr_frame_idx - 1; // 1→0, 2→1, 3→2
                 diff_frame2[slot] = frame_diff_pers;
                 diff_counter2++;
             }
@@ -978,7 +944,7 @@ int seq_frame_read(void)
 
 int seq_frame_process(void)
 {
-    int cnt;
+    int cnt = 0;
     struct timespec proc_ts_start, proc_ts_now;
     double proc_start, proc_now;
 
@@ -1303,7 +1269,7 @@ static void init_mmap(char *dev_name)
     ring_buffer.tail_idx = 0;
     ring_buffer.head_idx = 0;
     ring_buffer.count = 0;
-    ring_buffer.ring_size = ACQ_FRAMES_STORED_PER_FPS * FRAMES_PER_SEC;
+    ring_buffer.ring_size = FRAMES_PER_ACQ_PERIOD;
     for (int i = 0; i < ring_buffer.ring_size; i++)
     {
         ring_buffer.save_frame[i].is_different_from_previous = false;
@@ -1643,7 +1609,7 @@ static void yuyv_frame_to_rgb(const unsigned char *yuyv,
    or -1 when fewer than 2 frames have been acquired.
    Called by Service_4_frame_display(); ring_buffer is process-local so no IPC
    is needed. Service_1 (higher priority) has already advanced tail past both
-   slots read here — with ring_size=5 there are 3 write slots of gap before
+   slots read here — with ring_size=3 there are 3 write slots of gap before
    the writer could overwrite ci or pi. */
 int seq_frame_get_for_display(unsigned char *curr_rgb,
                               unsigned char *prev_rgb,

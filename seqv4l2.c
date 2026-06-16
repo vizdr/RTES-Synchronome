@@ -5,14 +5,14 @@
 //
 // Sequencer - 120 Hz
 //                   [gives semaphores to all other services]
-// Service_1 - 20 Hz, every 6th Sequencer loop reads a V4L2 video frame
+// Service_1 - 30 Hz, every 6th Sequencer loop reads a V4L2 video frame
 // Service_2 -  10 Hz, every 12th Sequencer loop writes out the current video frame
 // ..
 //
 // With the above, priorities by RM policy would be:
 //
 // Sequencer = RT_MAX	@ 120 Hz
-// Servcie_1 = RT_MAX-1	@ 20  Hz
+// Servcie_1 = RT_MAX-1	@ 30  Hz
 // Service_2 = RT_MIN	@ 10   Hz
 // ..
 //
@@ -255,6 +255,7 @@ void main(void)
 
     pthread_attr_t main_attr;
     pid_t mainpid;
+    pthread_attr_init(&main_attr);
 
     struct sigaction sa;
     sa.sa_flags = SA_SIGINFO;
@@ -507,9 +508,9 @@ void main(void)
 
     /* arm the interval timer */
     itime.it_interval.tv_sec = 0;
-    itime.it_interval.tv_nsec = 10000000;
+    itime.it_interval.tv_nsec = 8333333;
     itime.it_value.tv_sec = 0;
-    itime.it_value.tv_nsec = 10000000;
+    itime.it_value.tv_nsec = 8333333;
     // itime.it_interval.tv_sec = 1;
     // itime.it_interval.tv_nsec = 0;
     // itime.it_value.tv_sec = 1;
@@ -524,12 +525,6 @@ void main(void)
         else
             printf("joined thread %d\n", i);
     }
-
-    if ((rc = pthread_create(&key_reader_thread, &key_read_attr,
-                             Service_6_keyboard_reader, (void *)&(threadParams_key_reader))) != 0)
-        fprintf(stderr, "pthread_create for service 6 - keyboard reader: %s\n", strerror(rc));
-    else
-        printf("pthread_create successful for service 6\n");
 
 #if VIEWER_ENABLE
     if ((rc = pthread_join(viewer_thread, NULL)) < 0)
@@ -587,8 +582,8 @@ void Sequencer(int id)
 
     // Release each service at a sub-rate of the generic sequencer rate
 
-    // Servcie_1 @ 20 Hz
-    if ((seqCnt % 6) == 0)
+    // Servcie_1 @ 30 Hz
+    if ((seqCnt % 4) == 0)
         sem_post(&semS1);
 
     // Service_2 @ 10 Hz
@@ -652,7 +647,7 @@ void *Service_1_frame_acquisition(void *threadp)
         current_realtime = realtime(&current_time_val);
         // syslog(LOG_CRIT, "S1 at 20 Hz on core %d for release %llu @ sec=%6.9lf", sched_getcpu(), S1Cnt, current_realtime - start_realtime);
 
-        if (S1Cnt > 9100)  /* 1801 frames × 20 Hz + startup headroom */
+        if (S1Cnt > 9100)  /* 1801 frames × (120 Hz / 20 Hz -> 6) + startup headroom */
         {
             abortTest = TRUE;
         };
@@ -703,31 +698,31 @@ void *Service_3_frame_filter(void *threadp)
 {
     struct timespec current_time_val;
     double current_realtime;
-    unsigned long long S5Cnt = 0;
+    unsigned long long S3Cnt = 0;
     int filter_cnt = 0;
     int filter_cnt_prev = 0;
     threadParams_t *threadParams = (threadParams_t *)threadp;
     printf("\nFrame filter thread running on CPU=%d \n", sched_getcpu());
     clock_gettime(MY_CLOCK_TYPE, &current_time_val);
     current_realtime = realtime(&current_time_val);
-    // syslog(LOG_CRIT, "S5 thread @ sec=%6.9lf", current_realtime - start_realtime);
+    // syslog(LOG_CRIT, "S3 thread @ sec=%6.9lf", current_realtime - start_realtime);
 
     // to avoid zero-fill allocation
     stack_prefault();
 
-    while (!abortS5)
+    while (!abortS3)
     {
-        sem_wait(&semS5);
+        sem_wait(&semS3);
 
-        if (abortS5)
+        if (abortS3)
             break;
-        S5Cnt++;
+        S3Cnt++;
 
         // DO WORK - apply filter to frame
         // filter_cnt = seq_frame_filter();
         if (skip_filter_requested > 0)
         {
-            printf("S5: skipping filter work due to user input\n");
+            printf("S3: skipping filter work due to user input\n");
         }
         else
         {
@@ -735,13 +730,13 @@ void *Service_3_frame_filter(void *threadp)
             filter_cnt = seq_frame_filter();
             if (filter_cnt_prev == filter_cnt)
             {
-                // syslog(LOG_CRIT, "S5: filter was not applied for release %llu, filter count %d", S5Cnt, filter_cnt);
+                // syslog(LOG_CRIT, "S3: filter was not applied for release %llu, filter count %d", S5Cnt, filter_cnt);
             }
         }
 
         clock_gettime(MY_CLOCK_TYPE, &current_time_val);
         current_realtime = realtime(&current_time_val);
-        // syslog(LOG_CRIT, "S5 at 10 Hz on core %d for release %llu @ sec=%6.9lf", sched_getcpu(), S5Cnt, current_realtime - start_realtime);
+        // syslog(LOG_CRIT, "S3 at 10 Hz on core %d for release %llu @ sec=%6.9lf", sched_getcpu(), S5Cnt, current_realtime - start_realtime);
 
         // after last write, set synchronous abort
         if (filter_cnt == 1802)
@@ -760,31 +755,31 @@ void *Service_5_frame_storage(void *threadp)
 {
     struct timespec current_time_val;
     double current_realtime;
-    unsigned long long S3Cnt = 0;
+    unsigned long long S5Cnt = 0;
     int store_cnt;
     threadParams_t *threadParams = (threadParams_t *)threadp;
     printf("\nFrame storage thread running on CPU=%d \n", sched_getcpu());
     clock_gettime(MY_CLOCK_TYPE, &current_time_val);
     current_realtime = realtime(&current_time_val);
-    // syslog(LOG_CRIT, "S3 thread @ sec=%6.9lf\n", current_realtime - start_realtime);
+    // syslog(LOG_CRIT, "S5 thread @ sec=%6.9lf\n", current_realtime - start_realtime);
 
     // to avoid zero-fill allocation
     stack_prefault();
 
-    while (!abortS3)
+    while (!abortS5)
     {
-        sem_wait(&semS3);
+        sem_wait(&semS5);
 
-        if (abortS3)
+        if (abortS5)
             break;
-        S3Cnt++;
+        S5Cnt++;
 
         // DO WORK - store frame
         store_cnt = seq_frame_store();
 
         clock_gettime(MY_CLOCK_TYPE, &current_time_val);
         current_realtime = realtime(&current_time_val);
-        // syslog(LOG_CRIT, "S3 at 10 Hz on core %d for release %llu @ sec=%6.9lf", sched_getcpu(), S3Cnt, current_realtime - start_realtime);
+        // syslog(LOG_CRIT, "S5 at 10 Hz on core %d for release %llu @ sec=%6.9lf", sched_getcpu(), S3Cnt, current_realtime - start_realtime);
 
         // after last write, set synchronous abort
         if (store_cnt == 1801)
