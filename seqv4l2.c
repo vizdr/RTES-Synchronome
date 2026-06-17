@@ -261,6 +261,8 @@ void main(void)
     sa.sa_flags = SA_SIGINFO;
 
     sa.sa_sigaction = skip_filter_handler;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGRTMIN + 1, &sa, NULL);
 
     // write to sysfs: the kernel resets the latency constraint when the fd is closed, which is why it's stored in a static variable. It will be released automatically when the process exits
     static int dma_lat_fd = -1;
