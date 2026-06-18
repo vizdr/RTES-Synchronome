@@ -68,7 +68,7 @@
 // #define MY_CLOCK_TYPE CLOCK_MONTONIC_COARSE
 
 /* ── Viewer / Service_4 configuration ─────────────────────────── */
-#define VIEWER_ENABLE 1        /* 0 = compile out all SDL2 code   */
+#define VIEWER_ENABLE 0        /* 0 = compile out all SDL2 code   */
 #define VIEWER_SHOW_CURRENT 1  /* Window 0: latest frame          */
 #define VIEWER_SHOW_PREVIOUS 1 /* Window 1: previous frame        */
 #define VIEWER_SHOW_DIFF 1     /* Window 2: |curr-prev| x amplify */
@@ -86,6 +86,8 @@
 
 int abortTest = FALSE;
 atomic_int abortS1 = FALSE, abortS2 = FALSE, abortS3 = FALSE, abortS5 = FALSE;
+extern atomic_int abortS7; /* defined in capturelib.c */
+extern sem_t      semS7;   /* defined in capturelib.c */
 sem_t semS1, semS2, semS3, semS5, semS6;
 
 #if VIEWER_ENABLE
@@ -116,6 +118,7 @@ void *Service_2_frame_process(void *threadp);
 void *Service_3_frame_filter(void *threadp);
 void *Service_5_frame_storage(void *threadp);
 void *Service_6_keyboard_reader(void *threadp);
+void *Service_7_frame_write(void *threadp);
 
 #if VIEWER_ENABLE
 void *Service_4_frame_display(void *threadp);
@@ -132,6 +135,8 @@ int seq_frame_read(void);
 int seq_frame_process(void);
 int seq_frame_store(void);
 int seq_frame_filter(void);
+int seq_frame_write(void);
+int seq_write_queue_count(void);
 
 double getTimeMsec(void);
 double realtime(struct timespec *tsptr);
@@ -259,8 +264,9 @@ void main(void)
 
     struct sigaction sa;
     sa.sa_flags = SA_SIGINFO;
-
     sa.sa_sigaction = skip_filter_handler;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGRTMIN + 1, &sa, NULL);
 
     // write to sysfs: the kernel resets the latency constraint when the fd is closed, which is why it's stored in a static variable. It will be released automatically when the process exits
     static int dma_lat_fd = -1;
@@ -327,6 +333,11 @@ void main(void)
     if (sem_init(&semS6, 0, 0))
     {
         printf("Failed to initialize S6 semaphore\n");
+        exit(-1);
+    }
+    if (sem_init(&semS7, 0, 0))
+    {
+        printf("Failed to initialize S7 semaphore\n");
         exit(-1);
     }
     mainpid = getpid();
@@ -491,6 +502,37 @@ void main(void)
     else
         printf("pthread_create successful for service 6\n");
 
+    // Service_7 = SCHED_OTHER prio=0, non-RT file writer.
+    // Receives frames from S5 via the lock-free write queue and writes PPM files.
+    // Runs on VIEWER_CORE to keep all blocking I/O off RT_CORE.
+    pthread_t writer_thread;
+    threadParams_t threadParams_writer;
+    {
+        pthread_attr_t writer_attr;
+        struct sched_param writer_param;
+        cpu_set_t writercpu;
+
+        writer_param.sched_priority = 0;
+        CPU_ZERO(&writercpu);
+        CPU_SET(VIEWER_CORE, &writercpu);
+
+        pthread_attr_init(&writer_attr);
+        pthread_attr_setinheritsched(&writer_attr, PTHREAD_EXPLICIT_SCHED);
+        pthread_attr_setschedpolicy(&writer_attr, SCHED_OTHER);
+        pthread_attr_setschedparam(&writer_attr, &writer_param);
+        pthread_attr_setaffinity_np(&writer_attr, sizeof(cpu_set_t), &writercpu);
+
+        threadParams_writer.threadIdx = (sizeof(threadParams) / sizeof(threadParams[0])) + 3;
+        rc = pthread_create(&writer_thread, &writer_attr,
+                            Service_7_frame_write, (void *)&(threadParams_writer));
+        if (rc != 0)
+            fprintf(stderr, "pthread_create for service 7 - frame writer: %s\n", strerror(rc));
+        else
+            printf("pthread_create successful for service 7\n");
+
+        pthread_attr_destroy(&writer_attr);
+    }
+
     // Create Sequencer thread, which like a cyclic executive, is highest prio
     printf("Start sequencer\n");
 
@@ -533,6 +575,11 @@ void main(void)
         printf("joined viewer thread\n");
 #endif
 
+    if ((rc = pthread_join(writer_thread, NULL)) < 0)
+        perror("main pthread_join for writer thread");
+    else
+        printf("joined writer thread\n");
+
     v4l2_frame_acquisition_shutdown();
 
     printf("\nTEST COMPLETE\n");
@@ -560,6 +607,7 @@ void Sequencer(int id)
         abortS2 = TRUE;
         abortS3 = TRUE;
         abortS5 = TRUE;
+        abortS7 = TRUE;
 #if VIEWER_ENABLE
         abortS4 = TRUE;
 #endif
@@ -568,6 +616,7 @@ void Sequencer(int id)
         sem_post(&semS3);
         sem_post(&semS5);
         sem_post(&semS6);
+        sem_post(&semS7); /* wake S7 to drain write queue then exit */
 #if VIEWER_ENABLE
         sem_post(&semS4);
 #endif
@@ -869,7 +918,7 @@ void *Service_4_frame_display(void *threadp)
         win[nwins] = SDL_CreateWindow((label), xpos, VIEWER_WIN_Y,                             \
                                       VIEWER_WIN_W, VIEWER_WIN_H, SDL_WINDOW_RESIZABLE);       \
         ren[nwins] = SDL_CreateRenderer(win[nwins], -1,                                        \
-                                        SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC); \
+                                        SDL_RENDERER_ACCELERATED);                             \
         tex[nwins] = SDL_CreateTexture(ren[nwins], SDL_PIXELFORMAT_RGB24,                      \
                                        SDL_TEXTUREACCESS_STREAMING,                            \
                                        VIEWER_WIN_W, VIEWER_WIN_H);                            \
@@ -1024,5 +1073,32 @@ void *Service_6_keyboard_reader(void *threadp)
     }
 
     tcsetattr(STDIN_FILENO, TCSANOW, &orig_termios);
+    pthread_exit((void *)0);
+}
+
+/* Service_7 — non-RT file writer on VIEWER_CORE.
+   Sleeps on semS7; each post from S5 means one RGB frame is ready in
+   the lock-free write queue.  Drains the queue completely before
+   exiting so no frames are lost on shutdown. */
+void *Service_7_frame_write(void *threadp)
+{
+    printf("\nFrame writer thread running on CPU=%d\n", sched_getcpu());
+
+    while (1)
+    {
+        sem_wait(&semS7);
+
+        /* On abort: finish writing everything still in the queue, then exit. */
+        if (abortS7 && seq_write_queue_count() == 0)
+            break;
+
+        seq_frame_write();
+
+        /* Second check: abort may have fired while seq_frame_write() was executing.
+           Without this, S7 loops to sem_wait with count=0 and blocks forever. */
+        if (abortS7 && seq_write_queue_count() == 0)
+            break;
+    }
+
     pthread_exit((void *)0);
 }

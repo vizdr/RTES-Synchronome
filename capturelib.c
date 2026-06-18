@@ -38,6 +38,8 @@
 
 #include <time.h>
 #include <limits.h>
+#include <semaphore.h>
+#include <stdatomic.h>
 
 #define CLEAR(x) memset(&(x), 0, sizeof(x))
 
@@ -73,13 +75,14 @@
 #define COLOR_CONVERT_RGB
 // #define COLOR_CONVERT_GRAY
 #define DUMP_FRAMES
-#define RING_BUF_RESERVE_FRAMES (3)
+#define RING_BUF_RESERVE_FRAMES (10)
 #define FRAMES_PER_ACQ_PERIOD (3) // input ring buffer size should be large enough, so that we can have a good chance of not losing frames while we are processing and saving frames, but also not so large that we are wasting a lot of memory on the ring buffer
-#define DRIVER_MMAP_BUFFERS (6)       // request buffers for delay
-#define RING_OUTPUT_BUFFER_SIZE (FRAMES_PER_ACQ_PERIOD + RING_BUF_RESERVE_FRAMES)
-#define DIFF_MIN (0.45f)                   // value from experiment
-#define DIFF_MAX (0.65f)                   // value from experiment
-#define CAPTURE_HEAD_STABILITY_PERIODS (3) // require this many consecutive periods with the same computed head_idx before adopting it
+#define DRIVER_MMAP_BUFFERS (6)   // request buffers for delay
+#define RING_OUTPUT_BUFFER_SIZE (FRAMES_PER_ACQ_PERIOD * FRAMES_PER_SEC)
+#define WRITE_QUEUE_SIZE (RING_OUTPUT_BUFFER_SIZE)
+#define DIFF_MIN (0.7f)                    // value from experiment
+#define DIFF_MAX (0.94f)                   // value from experiment
+#define CAPTURE_HEAD_STABILITY_PERIODS (0) // require this many consecutive periods with the same computed head_idx before adopting it
 
 // adjacent string literals are concatenated at compile time, so we can use this to build our log message format string
 #define COURSE_FRM_CAPT_SYSLOG(crs, nmb) "[COURSE " crs "][" nmb "][Frame Count: %d][Image Capture Start Time: %lf seconds]"
@@ -140,6 +143,29 @@ struct ring_out_buffer_t
 
 static struct ring_out_buffer_t ring_output_buffer;
 
+/* ── Write queue: lock-free SPSC between S5 (producer, RT_CORE) and S7 (consumer, VIEWER_CORE) ── */
+struct write_job_t
+{
+    unsigned char frame[HRES * VRES * 3]; /* RGB24, 921600 bytes */
+    struct timespec time_stamp;
+    unsigned int tag; /* save_framecnt at enqueue time */
+};
+
+static struct write_job_t write_queue[WRITE_QUEUE_SIZE];
+static _Atomic unsigned int wq_tail = 0; /* advanced only by S5 */
+static _Atomic unsigned int wq_head = 0; /* advanced only by S7 */
+
+sem_t semS7; /* defined here, used by seqv4l2.c via extern */
+atomic_int abortS7 = ATOMIC_VAR_INIT(0);
+/* ─────────────────────────────────────────────────────────────────────────────────────────────── */
+
+int seq_write_queue_count(void)
+{
+    unsigned int h = atomic_load_explicit(&wq_head, memory_order_acquire);
+    unsigned int t = atomic_load_explicit(&wq_tail, memory_order_acquire);
+    return (int)((t - h + WRITE_QUEUE_SIZE) % WRITE_QUEUE_SIZE);
+}
+
 unsigned char scratchpad_buffer[MAX_HRES * MAX_VRES * MAX_PIXEL_SIZE]; // this is used for processing and saving frames, so that we don't have to worry about the ring buffer being overwritten by the acquisition loop while we are processing or saving a frame
 bool is_scratchpad_buffer_in_use = false;                              // this is used to indicate whether the scratchpad buffer is currently being used for processing or saving a frame, so that we can avoid overwriting it with new frames from the acquisition loop while we are processing or saving a frame
 
@@ -196,10 +222,16 @@ unsigned int frame_diff_rgb(const unsigned char *prev,
 static void dump_ppm(const void *p, int size, unsigned int tag, struct timespec *time)
 {
     int written, i, total, dumpfd;
-
+    static double dump_ppm_fnow;
+    static struct timespec dump_time_now;
     snprintf(&ppm_dumpname[11], 9, "%04d", tag);
     strncat(&ppm_dumpname[15], ".ppm", 5);
-    dumpfd = open(ppm_dumpname, O_WRONLY | O_NONBLOCK | O_CREAT, 00666);
+    dumpfd = open(ppm_dumpname, O_WRONLY | O_CREAT | O_TRUNC, 00666);
+    if (dumpfd < 0)
+    {
+        perror(ppm_dumpname);
+        return;
+    }
 
     snprintf(&ppm_header[4], 11, "%010d", (int)time->tv_sec);
     strncat(&ppm_header[14], " sec ", 5);
@@ -214,12 +246,17 @@ static void dump_ppm(const void *p, int size, unsigned int tag, struct timespec 
     do
     {
         written = write(dumpfd, p, size);
+        if (written <= 0)
+        {
+            perror("write ppm");
+            break;
+        }
         total += written;
     } while (total < size);
 
-    clock_gettime(CLOCK_MONOTONIC, &time_now);
-    fnow = (double)time_now.tv_sec + (double)time_now.tv_nsec / 1000000000.0;
-    // syslog(LOG_CRIT, "Frame written to flash at %lf, %d, bytes\n", (fnow - fstart), total);
+    clock_gettime(CLOCK_MONOTONIC, &dump_time_now);
+    dump_ppm_fnow = (double)dump_time_now.tv_sec + (double)dump_time_now.tv_nsec / 1000000000.0;
+    // syslog(LOG_CRIT, "Frame written to flash at %lf, %d, bytes\n", (dump_ppm_fnow - fstart), total);
 
     close(dumpfd);
 }
@@ -230,10 +267,13 @@ char pgm_dumpname[] = "frames/Time-0000.pgm";
 static void dump_pgm(const void *p, int size, unsigned int tag, struct timespec *time)
 {
     int written, i, total, dumpfd;
+    static double dump_pgm_fnow;
+    static struct timespec dmp_time_now;
 
     snprintf(&pgm_dumpname[11], 9, "%04d", tag);
     strncat(&pgm_dumpname[15], ".pgm", 5);
-    dumpfd = open(pgm_dumpname, O_WRONLY | O_NONBLOCK | O_CREAT, 00666);
+    dumpfd = open(pgm_dumpname, O_WRONLY | O_TRUNC | O_CREAT, 00666);
+    if (dumpfd < 0) { perror(pgm_dumpname); return; }
 
     snprintf(&pgm_header[4], 11, "%010d", (int)time->tv_sec);
     strncat(&pgm_header[14], " sec ", 5);
@@ -248,11 +288,16 @@ static void dump_pgm(const void *p, int size, unsigned int tag, struct timespec 
     do
     {
         written = write(dumpfd, p, size);
+        if (written <= 0)
+        {
+            perror("write ppm");
+            break;
+        }
         total += written;
     } while (total < size);
 
-    clock_gettime(CLOCK_MONOTONIC, &time_now);
-    fnow = (double)time_now.tv_sec + (double)time_now.tv_nsec / 1000000000.0;
+    // clock_gettime(CLOCK_MONOTONIC, &dmp_time_now);
+    dump_pgm_fnow = (double)dmp_time_now.tv_sec + (double)dmp_time_now.tv_nsec / 1000000000.0;
     // syslog(LOG_CRIT, "Frame written to flash at %lf, %d, bytes\n", (fnow - fstart), total);
 
     close(dumpfd);
@@ -680,15 +725,15 @@ static void disable_auto_exposure(void)
 static unsigned int compute_head_idx(const double *slots, int n_slots,
                                      unsigned int count, unsigned int fallback)
 {
-    static long double thres = 0.06; // threshold
+    static long double thres = 0.06; // threshold from experiment
     if (count == 1)
     {
         if (slots[0] > 0)
-            return 0;
+            return 2;
         if (slots[1] > 0)
-            return 1;
+            return 0;
     }
-    else if (count == 2)
+    /* else if (count == 2)
     {
         if (slots[0] > (slots[1] + thres))
         {
@@ -696,8 +741,8 @@ static unsigned int compute_head_idx(const double *slots, int n_slots,
         }
         if (slots[1] >  (slots[0] + thres))
                 return 1;
-    }
-    
+    } */
+
     return fallback;
 }
 
@@ -778,7 +823,7 @@ int seq_frame_read(void)
             diff_frame[slot] = frame_diff_pers;
             diff_counter++;
         }
-        if (read_framecnt == -3)  // we are at end of the range
+        if (read_framecnt == -3) // we are at end of the range
         {
             syslog(LOG_CRIT, "the first startup: diff_counter=%d, slots=[%lf,%lf]",
                    diff_counter, diff_frame[0], diff_frame[1]);
@@ -834,7 +879,7 @@ int seq_frame_read(void)
     }
     else
     {
-        //syslog(LOG_CRIT, "at %lf", fnow);
+        // syslog(LOG_CRIT, "at %lf", fnow);
     }
 
     // printf("--Acquisitation read frame at: %lf\n", (fnow - read_start));
@@ -844,7 +889,7 @@ int seq_frame_read(void)
         // Select frames to save based on whether they are different from the previous frame
         struct timespec sel_ts_start, sel_ts_now;
         double sel_start, sel_now;
-
+        static unsigned int computed_idx;
         clock_gettime(CLOCK_MONOTONIC, &sel_ts_start);
         sel_start = (double)sel_ts_start.tv_sec + (double)sel_ts_start.tv_nsec / 1000000000.0;
         // we should apply the new head idx with delay to avoid the frames with stucked second hand and jumps of the second hand
@@ -863,7 +908,7 @@ int seq_frame_read(void)
             }
             else
             {
-                if (header_idx_delay_counter > 4)
+                if (header_idx_delay_counter > 0)
                 {
                     prev_head_idx = capture_head_idx;
                     header_idx_delay_counter = 0;
@@ -893,7 +938,7 @@ int seq_frame_read(void)
                 // **************************************************************************************
                 // syslog(LOG_CRIT, "Frame at tail of ring buffer %d is not the same as previous frame, marked.\n", curr_frame_idx);
                 // **************************************************************************************
-                //syslog(LOG_CRIT, "Difference in frame %d : %lf detectecd, read counter: %d", curr_frame_idx, frame_diff_pers, read_framecnt);
+                // syslog(LOG_CRIT, "Difference in frame %d : %lf detectecd, read counter: %d", curr_frame_idx, frame_diff_pers, read_framecnt);
                 // syslog(LOG_CRIT, "BEFORE Frame: %d, diff_counter2= %d, diff_frame2: [%lf, %lf, %lf, %lf]", read_framecnt, diff_counter2, diff_frame2[0], diff_frame2[1], diff_frame2[2], diff_frame2[3]);
 
                 int slot = curr_frame_idx - 1; // 1→0, 2→1, 3→2
@@ -907,28 +952,37 @@ int seq_frame_read(void)
                 // syslog(LOG_CRIT, "Frame at tail of ring buffer %d is the same as previous frame, not marked.\n", curr_frame_idx);
                 // **************************************************************************************************************
             }
-            if (curr_frame_idx == ring_buffer.ring_size - 1) // we are at the end of period
+            if (curr_frame_idx == (ring_buffer.ring_size - 1)) // we are at the end of period
             {
-                //syslog(LOG_CRIT, "capture: diff_counter2= %d, slots=[ %lf,%lf,%lf,%lf ]",
-                //       diff_counter2, diff_frame2[0], diff_frame2[1], diff_frame2[2], diff_frame2[3]);
+                // syslog(LOG_CRIT, "capture: diff_counter2= %d, slots=[%lf,%lf], capture_head_idx= %u", diff_counter2, diff_frame2[0], diff_frame2[1], capture_head_idx);
+
                 unsigned int computed_idx = compute_head_idx(diff_frame2,
                                                              sizeof(diff_frame2) / sizeof(diff_frame2[0]),
-                                                             diff_counter2, capture_head_idx == UINT_MAX ? sel_startup_head_idx : capture_head_idx /*fallback*/);
+                                                             diff_counter2, (capture_head_idx == UINT_MAX) ? sel_startup_head_idx : capture_head_idx /*fallback*/);
                 if (computed_idx == pending_capture_head_idx)
                 {
                     pending_capture_count++;
-                    if (pending_capture_count >= CAPTURE_HEAD_STABILITY_PERIODS && capture_head_idx != computed_idx)
+                    if (pending_capture_count > CAPTURE_HEAD_STABILITY_PERIODS && capture_head_idx != computed_idx)
                     {
-                        capture_head_idx = computed_idx;
-                        //syslog(LOG_CRIT, "capture_head_idx stabilized at %u after %u periods, read counter= %d", capture_head_idx, pending_capture_count, read_framecnt);
+                        // prevent jumps into 1
+                        if (computed_idx == 2 && capture_head_idx == 0)
+                        {
+                            capture_head_idx = computed_idx; //         initially assumed:      capture_head_idx = 1;
+                            pending_capture_count -= CAPTURE_HEAD_STABILITY_PERIODS;
+                        }
+                        else
+                        {
+                            capture_head_idx = computed_idx;
+                        }
+                        // syslog(LOG_CRIT, "capture_head_idx stabilized at %u after %u periods, read counter= %d", capture_head_idx, pending_capture_count, read_framecnt);
                     }
                 }
                 else
                 {
                     pending_capture_head_idx = computed_idx;
-                    pending_capture_count = 1;
+                    pending_capture_count = CAPTURE_HEAD_STABILITY_PERIODS;
                 }
-                //syslog(LOG_CRIT, "capture_head_idx: %u (pending=%u count=%u), read counter= %d, curr_frame_idx=%d", capture_head_idx, pending_capture_head_idx, pending_capture_count, read_framecnt, curr_frame_idx);
+                // syslog(LOG_CRIT, "capture_head_idx: %u (pending=%u count=%u), read counter= %d, curr_frame_idx=%d", capture_head_idx, pending_capture_head_idx, pending_capture_count, read_framecnt, curr_frame_idx);
                 diff_counter2 = 0;
                 memset(diff_frame2, 0, sizeof(diff_frame2));
             }
@@ -978,50 +1032,54 @@ int seq_frame_process(void)
     }
     else
     {
-        //syslog(LOG_CRIT,"at %lf", fnow - fstart);
+        // syslog(LOG_CRIT,"at %lf", fnow - fstart);
     }
 
     return cnt;
 }
 
+/* S5 (RT): enqueue a filtered frame for disk write by S7.
+   Only a memcpy + atomic pointer advance — no blocking I/O. */
 int seq_frame_store(void)
 {
-    int cnt, cnt2 = 0;
-    struct timespec store_ts_start, store_ts_now;
-    double store_start, store_now;
+    int cnt2 = 0;
+    struct timespec s5_ts;
 
     if (read_framecnt > 0)
     {
-        clock_gettime(CLOCK_MONOTONIC, &store_ts_start);
-        store_start = (double)store_ts_start.tv_sec + (double)store_ts_start.tv_nsec / 1000000000.0;
-        // cnt = save_image(scratchpad_buffer, HRES * VRES * PIXEL_SIZE, &time_now);
-
-        if ((ring_output_buffer.save_out_frame[ring_output_buffer.head_idx].is_ready_to_save) && (ring_output_buffer.save_out_frame[ring_output_buffer.head_idx].is_filter_applied))
+        struct save_out_frame_t *slot = &ring_output_buffer.save_out_frame[ring_output_buffer.head_idx];
+        if (slot->is_ready_to_save && slot->is_filter_applied)
         {
+            unsigned int tail = atomic_load_explicit(&wq_tail, memory_order_relaxed);
+            unsigned int next = (tail + 1) % WRITE_QUEUE_SIZE;
 
-            cnt2 = save_image((void *)&(ring_output_buffer.save_out_frame[ring_output_buffer.head_idx].frame[0]), HRES * VRES * PIXEL_SIZE, &time_now);
+            if (next != atomic_load_explicit(&wq_head, memory_order_acquire))
+            {
 
-            ring_output_buffer.save_out_frame[ring_output_buffer.head_idx].is_ready_to_save = false;
-            ring_output_buffer.save_out_frame[ring_output_buffer.head_idx].is_filter_applied = false;
+                clock_gettime(CLOCK_MONOTONIC, &s5_ts);
+                /* Copy RGB frame and metadata into the write queue slot (S5 owns
+                   this slot until wq_tail is published below). */
+                memcpy(write_queue[tail].frame, slot->frame, HRES * VRES * 3);
+                write_queue[tail].time_stamp = s5_ts;
+                save_framecnt++;
+                write_queue[tail].tag = save_framecnt;
+                cnt2 = save_framecnt;
 
-            ring_output_buffer.head_idx = (ring_output_buffer.head_idx + 1u) % ring_output_buffer.ring_size;
-            ring_output_buffer.count--;
-            // printf("save_framecnt=%d ", save_framecnt);
+                /* Publish slot to S7 */
+                atomic_store_explicit(&wq_tail, next, memory_order_release);
 
-            clock_gettime(CLOCK_MONOTONIC, &time_now);
-            fnow = (double)time_now.tv_sec + (double)time_now.tv_nsec / 1000000000.0;
-            // ------------------------------------------------------------------------------------------
-            syslog(LOG_CRIT, COURSE_FRM_CAPT_SYSLOG(COURSE, ASS), save_framecnt, (fnow - fstart));
-            // ------------------------------------------------------------------------------------------
-            // syslog(LOG_CRIT, "save_framecnt=%d at %lf and %lf FPS", save_framecnt, (fnow - fstart), (double)(save_framecnt) / (fnow - fstart));
-            // printf(" saved at %lf, @ %lf FPS\n", (fnow - fstart), (double)(save_framecnt) / (fnow - fstart));
-            // printf("---Saving time for this frame: %lf\n", (fnow - store_start));
-        }
-        else
-        {
-            // ********************************************************************************************************
-            // syslog(LOG_CRIT, "The frame %u from output ring buffer rejected to save.", ring_output_buffer.head_idx);
-            // ********************************************************************************************************
+                /* Release the output ring slot immediately for reuse by S2/S3 */
+                slot->is_ready_to_save = false;
+                slot->is_filter_applied = false;
+                ring_output_buffer.head_idx = (ring_output_buffer.head_idx + 1u) % ring_output_buffer.ring_size;
+                ring_output_buffer.count--;
+
+                sem_post(&semS7); /* wake S7 */
+            }
+            else
+            {
+                syslog(LOG_CRIT, "output ring buffer overflow, frame dropped");
+            }
         }
     }
     else
@@ -1031,6 +1089,32 @@ int seq_frame_store(void)
     }
 
     return cnt2;
+}
+
+/* S7 (non-RT): pop one frame from the write queue and write it to disk.
+   Called in a loop by Service_7_frame_write().
+   Returns the tag of the written frame, or 0 if the queue was empty (abort path). */
+int seq_frame_write(void)
+{
+    unsigned int head = atomic_load_explicit(&wq_head, memory_order_relaxed);
+
+    if (head == atomic_load_explicit(&wq_tail, memory_order_acquire))
+        return 0; /* queue empty — woke on abort signal */
+
+    double cap_time = (double)write_queue[head].time_stamp.tv_sec + (double)write_queue[head].time_stamp.tv_nsec / 1e9;
+
+    syslog(LOG_CRIT, COURSE_FRM_CAPT_SYSLOG(COURSE, ASS), write_queue[head].tag, (cap_time - fstart));
+    /* Write to disk while still holding the slot (wq_head not yet advanced,
+       so S5 cannot overwrite this slot until we release it below). */
+    dump_ppm(write_queue[head].frame, HRES * VRES * 3,
+             write_queue[head].tag, &write_queue[head].time_stamp);
+
+    unsigned int tag = write_queue[head].tag;
+
+    /* Release the slot back to the producer */
+    atomic_store_explicit(&wq_head, (head + 1) % WRITE_QUEUE_SIZE, memory_order_release);
+
+    return tag;
 }
 
 int seq_frame_filter(void)
