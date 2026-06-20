@@ -73,7 +73,7 @@
 #define COLOR_CONVERT_RGB
 // #define COLOR_CONVERT_GRAY
 #define DUMP_FRAMES
-#define ACQ_FRAMES_STORED_PER_FPS (5) // input ring buffer size should be large enough to hold at least 5 frames for each frame per second rate that we want to support, so that we can have a good chance of not losing frames while we are processing and saving frames, but also not so large that we are wasting a lot of memory on the ring buffer
+#define ACQ_FRAMES_STORED_PER_FPS (5) // input ring buffer size should be large enough to hold at least 5 frames for each frame per second rate that we want to support
 #define DRIVER_MMAP_BUFFERS (6)       // request buffers for delay
 #define RING_OUTPUT_BUFFER_SIZE (FRAMES_PER_SEC + 3)
 #define DIFF_MIN (0.46f)                   // value from experiment
@@ -213,6 +213,11 @@ static void dump_ppm(const void *p, int size, unsigned int tag, struct timespec 
     do
     {
         written = write(dumpfd, p, size);
+        if (written <= 0)
+        {
+            perror("write ppm");
+            break;
+        }
         total += written;
     } while (total < size);
 
@@ -247,6 +252,11 @@ static void dump_pgm(const void *p, int size, unsigned int tag, struct timespec 
     do
     {
         written = write(dumpfd, p, size);
+        if (written <= 0)
+        {
+            perror("write pgm");
+            break;
+        }
         total += written;
     } while (total < size);
 
@@ -754,6 +764,7 @@ int seq_frame_read(void)
     static unsigned int pending_capture_head_idx = UINT_MAX;
     static unsigned int pending_capture_count = 0;
     int is_read_unsafe = INT_MIN;
+
     rc = select(camera_device_fd + 1, &fds, NULL, NULL, &tv);
 
     if (-1 == rc)
@@ -871,7 +882,7 @@ int seq_frame_read(void)
         //syslog(LOG_CRIT, "at %lf", fnow);
     }
 
-    // printf("--Acquisitation read frame at: %lf\n", (fnow - read_start));
+    // syslog(LOG_CRIT, "--Acquisitation read frame at: %lf", (fnow - read_start));
 
     if (read_framecnt > 0)
     {
@@ -890,6 +901,7 @@ int seq_frame_read(void)
         }
         else
         {
+            // Delay logic to avoid jumps into 1 frame (sec)
             if (prev_head_idx == capture_head_idx)
             {
                 ring_buffer.save_frame[capture_head_idx].is_selected_to_save = true;
@@ -943,8 +955,8 @@ int seq_frame_read(void)
             }
             if (curr_frame_idx == ring_buffer.ring_size - 1) // we are at the end of period
             {
-                //syslog(LOG_CRIT, "capture: diff_counter2= %d, slots=[ %lf,%lf,%lf,%lf ]",
-                //       diff_counter2, diff_frame2[0], diff_frame2[1], diff_frame2[2], diff_frame2[3]);
+                //syslog(LOG_CRIT, "capture: diff_counter2= %d, slots=[ %lf,%lf,%lf,%lf ]", diff_counter2, diff_frame2[0], diff_frame2[1], diff_frame2[2], diff_frame2[3]);
+                      
                 unsigned int computed_idx = compute_head_idx(diff_frame2,
                                                              sizeof(diff_frame2) / sizeof(diff_frame2[0]),
                                                              diff_counter2, capture_head_idx == UINT_MAX ? sel_startup_head_idx : capture_head_idx /*fallback*/);
@@ -983,8 +995,6 @@ int seq_frame_process(void)
     double proc_start, proc_now;
 
     // syslog(LOG_CRIT, "processing rb.tail=%d, rb.head=%d, rb.count=%d\n", ring_buffer.tail_idx, ring_buffer.head_idx, ring_buffer.count);
-
-    // ring_buffer.head_idx = (ring_buffer.head_idx + 2) % ring_buffer.ring_size;  // reference logic from startup code
 
     if (read_framecnt > 0)
     {
@@ -1028,7 +1038,6 @@ int seq_frame_store(void)
     {
         clock_gettime(CLOCK_MONOTONIC, &store_ts_start);
         store_start = (double)store_ts_start.tv_sec + (double)store_ts_start.tv_nsec / 1000000000.0;
-        // cnt = save_image(scratchpad_buffer, HRES * VRES * PIXEL_SIZE, &time_now);
 
         if ((ring_output_buffer.save_out_frame[ring_output_buffer.head_idx].is_ready_to_save) && (ring_output_buffer.save_out_frame[ring_output_buffer.head_idx].is_filter_applied))
         {
@@ -1069,17 +1078,13 @@ int seq_frame_store(void)
 
 int seq_frame_filter(void)
 {
-    // this is where we would implement any additional filtering or processing on the processed frames that are in the output ring buffer, but for simplicity, we will just save the processed frames to disk without any additional filtering or processing, so this function is just a placeholder for where that code would go if we wanted to implement it
-
+    // this is where we implement any additional filtering or processing on the processed frames that are in the output ring buffer
     if ((ring_output_buffer.save_out_frame[ring_output_buffer.head_idx].is_ready_to_save) && (!ring_output_buffer.save_out_frame[ring_output_buffer.head_idx].is_filter_applied))
     {
-        // process the frame in the output ring buffer, which should already be in RGB format, so we can just save it to disk without any additional processing, but if we wanted to implement any additional filtering or processing on the processed frames, we would do it here before saving the frame to disk
-        // save_image((void *)&(ring_output_buffer.save_out_frame[i].frame[0]), HRES * VRES * PIXEL_SIZE, &time_now);
-
         apply_filter((void *)&(ring_output_buffer.save_out_frame[ring_output_buffer.head_idx].frame[0]), HRES * VRES * PIXEL_SIZE * 3);
         ring_output_buffer.save_out_frame[ring_output_buffer.head_idx].is_filter_applied = true;
 
-        // syslog(LOG_CRIT, "Saved %d frame from output ring buffer processing by filter.", save_framecnt);
+        // syslog(LOG_CRIT, "Appled filter at %d frame from output ring buffer.", save_framecnt);
         filter_framecnt++;
         clock_gettime(CLOCK_MONOTONIC, &time_now);
         fnow = (double)time_now.tv_sec + (double)time_now.tv_nsec / 1000000000.0;
