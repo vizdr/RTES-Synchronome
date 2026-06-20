@@ -882,7 +882,7 @@ int seq_frame_read(void)
         // syslog(LOG_CRIT, "at %lf", fnow);
     }
 
-    // printf("--Acquisitation read frame at: %lf\n", (fnow - read_start));
+    // syslog(LOG_CRIT, "--Acquisitation read frame at: %lf\", (fnow - read_start));
 
     if (read_framecnt > 0)
     {
@@ -1004,8 +1004,6 @@ int seq_frame_process(void)
 
     // syslog(LOG_CRIT, "processing rb.tail=%d, rb.head=%d, rb.count=%d\n", ring_buffer.tail_idx, ring_buffer.head_idx, ring_buffer.count);
 
-    // ring_buffer.head_idx = (ring_buffer.head_idx + 2) % ring_buffer.ring_size;  // reference logic from startup code
-
     if (read_framecnt > 0)
     {
         clock_gettime(CLOCK_MONOTONIC, &proc_ts_start);
@@ -1119,17 +1117,14 @@ int seq_frame_write(void)
 
 int seq_frame_filter(void)
 {
-    // this is where we would implement any additional filtering or processing on the processed frames that are in the output ring buffer, but for simplicity, we will just save the processed frames to disk without any additional filtering or processing, so this function is just a placeholder for where that code would go if we wanted to implement it
-
+    // additional filtering or processing on the processed frames that are in the output ring buffer
     if ((ring_output_buffer.save_out_frame[ring_output_buffer.head_idx].is_ready_to_save) && (!ring_output_buffer.save_out_frame[ring_output_buffer.head_idx].is_filter_applied))
     {
-        // process the frame in the output ring buffer, which should already be in RGB format, so we can just save it to disk without any additional processing, but if we wanted to implement any additional filtering or processing on the processed frames, we would do it here before saving the frame to disk
-        // save_image((void *)&(ring_output_buffer.save_out_frame[i].frame[0]), HRES * VRES * PIXEL_SIZE, &time_now);
-
+        // process the frame in the output ring buffer, which should already be in RGB format, so we can just save it to disk without any additional processing
         apply_filter((void *)&(ring_output_buffer.save_out_frame[ring_output_buffer.head_idx].frame[0]), HRES * VRES * PIXEL_SIZE * 3);
         ring_output_buffer.save_out_frame[ring_output_buffer.head_idx].is_filter_applied = true;
 
-        // syslog(LOG_CRIT, "Saved %d frame from output ring buffer processing by filter.", save_framecnt);
+        // syslog(LOG_CRIT, "Applied filter at %d frame from output ring buffer.", save_framecnt);
         filter_framecnt++;
         clock_gettime(CLOCK_MONOTONIC, &time_now);
         fnow = (double)time_now.tv_sec + (double)time_now.tv_nsec / 1000000000.0;
