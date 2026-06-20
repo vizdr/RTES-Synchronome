@@ -2,7 +2,7 @@
 University of Colorado Boulder — Real Time Embedded Systems — Synchronome Project
 
 <p align="center">
-  <img src="RTS-Project-BlockDiagramm.png" width="900">
+  <img src="RTES-FP-1Hz.png" width="900">
 </p>
 
 ## Hardware
