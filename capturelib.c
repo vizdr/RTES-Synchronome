@@ -38,8 +38,7 @@
 
 #include <time.h>
 #include <limits.h>
-#include <semaphore.h>
-#include <stdatomic.h>
+#include <mqueue.h>
 
 #define CLEAR(x) memset(&(x), 0, sizeof(x))
 
@@ -79,7 +78,6 @@
 #define FRAMES_PER_ACQ_PERIOD (3) // input ring buffer size should be large enough, so that we can have a good chance of not losing frames while we are processing and saving frames, but also not so large that we are wasting a lot of memory on the ring buffer
 #define DRIVER_MMAP_BUFFERS (6)   // request buffers for delay
 #define RING_OUTPUT_BUFFER_SIZE (FRAMES_PER_ACQ_PERIOD * FRAMES_PER_SEC)
-#define WRITE_QUEUE_SIZE (RING_OUTPUT_BUFFER_SIZE)
 #define DIFF_MIN (0.7f)                    // value from experiment
 #define DIFF_MAX (0.94f)                   // value from experiment
 #define CAPTURE_HEAD_STABILITY_PERIODS (0) // require this many consecutive periods with the same computed head_idx before adopting it
@@ -143,28 +141,78 @@ struct ring_out_buffer_t
 
 static struct ring_out_buffer_t ring_output_buffer;
 
-/* ── Write queue: lock-free SPSC between S5 (producer, RT_CORE) and S7 (consumer, VIEWER_CORE) ── */
-struct write_job_t
+/* ── POSIX mqueue: S5 (producer, RT_CORE) → S7 (consumer, VIEWER_CORE) ── */
+#define FRAME_MQ_NAME  "/capture_frames"
+#define FRAME_MQ_DEPTH (RING_OUTPUT_BUFFER_SIZE)
+
+struct frame_msg
 {
-    unsigned char frame[HRES * VRES * 3]; /* RGB24, 921600 bytes */
+    unsigned char  *data;       /* heap buffer, RGB24, HRES*VRES*3; NULL = sentinel */
+    unsigned int    tag;        /* save_framecnt at enqueue time */
     struct timespec time_stamp;
-    unsigned int tag; /* save_framecnt at enqueue time */
 };
 
-static struct write_job_t write_queue[WRITE_QUEUE_SIZE];
-static _Atomic unsigned int wq_tail = 0; /* advanced only by S5 */
-static _Atomic unsigned int wq_head = 0; /* advanced only by S7 */
+static mqd_t frame_mq         = (mqd_t)-1;
+static int   mq_saved_msg_max = -1;
 
-sem_t semS7; /* defined here, used by seqv4l2.c via extern */
-atomic_int abortS7 = ATOMIC_VAR_INIT(0);
-/* ─────────────────────────────────────────────────────────────────────────────────────────────── */
-
-int seq_write_queue_count(void)
+void seq_write_init(void)
 {
-    unsigned int h = atomic_load_explicit(&wq_head, memory_order_acquire);
-    unsigned int t = atomic_load_explicit(&wq_tail, memory_order_acquire);
-    return (int)((t - h + WRITE_QUEUE_SIZE) % WRITE_QUEUE_SIZE);
+    char buf[16];
+    int fd, n;
+    struct mq_attr attr;
+    attr.mq_flags   = 0;
+    attr.mq_maxmsg  = FRAME_MQ_DEPTH;
+    attr.mq_msgsize = sizeof(struct frame_msg);
+    attr.mq_curmsgs = 0;
+
+    fd = open("/proc/sys/fs/mqueue/msg_max", O_RDONLY);
+    if (fd >= 0) {
+        n = read(fd, buf, sizeof(buf) - 1);
+        close(fd);
+        if (n > 0) { buf[n] = '\0'; mq_saved_msg_max = atoi(buf); }
+    }
+    if (mq_saved_msg_max < FRAME_MQ_DEPTH) {
+        fd = open("/proc/sys/fs/mqueue/msg_max", O_WRONLY);
+        if (fd >= 0) {
+            n = snprintf(buf, sizeof(buf), "%d", FRAME_MQ_DEPTH);
+            write(fd, buf, n);
+            close(fd);
+        }
+    }
+
+    mq_unlink(FRAME_MQ_NAME);
+    frame_mq = mq_open(FRAME_MQ_NAME, O_CREAT | O_RDWR, S_IRWXU, &attr);
+    if (frame_mq == (mqd_t)-1) {
+        fprintf(stderr, "mq_open error %d, %s\n", errno, strerror(errno));
+        exit(EXIT_FAILURE);
+    }
 }
+
+void seq_write_shutdown(void)
+{
+    struct frame_msg sentinel;
+    sentinel.data = NULL;
+    sentinel.tag  = 0;
+    if (mq_send(frame_mq, (const char *)&sentinel, sizeof(sentinel), 0) == -1)
+        perror("mq_send sentinel");
+}
+
+void seq_write_cleanup(void)
+{
+    char buf[16];
+    int fd, n;
+    if (frame_mq != (mqd_t)-1) { mq_close(frame_mq); frame_mq = (mqd_t)-1; }
+    mq_unlink(FRAME_MQ_NAME);
+    if (mq_saved_msg_max > 0) {
+        fd = open("/proc/sys/fs/mqueue/msg_max", O_WRONLY);
+        if (fd >= 0) {
+            n = snprintf(buf, sizeof(buf), "%d", mq_saved_msg_max);
+            write(fd, buf, n);
+            close(fd);
+        }
+    }
+}
+/* ─────────────────────────────────────────────────────────────────────────────────────────────── */
 
 unsigned char scratchpad_buffer[MAX_HRES * MAX_VRES * MAX_PIXEL_SIZE]; // this is used for processing and saving frames, so that we don't have to worry about the ring buffer being overwritten by the acquisition loop while we are processing or saving a frame
 bool is_scratchpad_buffer_in_use = false;                              // this is used to indicate whether the scratchpad buffer is currently being used for processing or saving a frame, so that we can avoid overwriting it with new frames from the acquisition loop while we are processing or saving a frame
@@ -1036,47 +1084,46 @@ int seq_frame_process(void)
     return cnt;
 }
 
-/* S5 (RT): enqueue a filtered frame for disk write by S7.
-   Only a memcpy + atomic pointer advance — no blocking I/O. */
+/* S5 (RT): malloc a frame buffer, copy from ring slot, mq_timedsend to S7.
+   Zero-second absolute timeout makes the send non-blocking: returns ETIMEDOUT
+   immediately if the queue is full so S5 never blocks on I/O. */
 int seq_frame_store(void)
 {
     int cnt2 = 0;
-    struct timespec s5_ts;
+    struct frame_msg msg;
+    struct timespec ts_zero = {0, 0};
 
     if (read_framecnt > 0)
     {
         struct save_out_frame_t *slot = &ring_output_buffer.save_out_frame[ring_output_buffer.head_idx];
         if (slot->is_ready_to_save && slot->is_filter_applied)
         {
-            unsigned int tail = atomic_load_explicit(&wq_tail, memory_order_relaxed);
-            unsigned int next = (tail + 1) % WRITE_QUEUE_SIZE;
-
-            if (next != atomic_load_explicit(&wq_head, memory_order_acquire))
+            msg.data = malloc(HRES * VRES * 3);
+            if (!msg.data)
             {
-
-                clock_gettime(CLOCK_MONOTONIC, &s5_ts);
-                /* Copy RGB frame and metadata into the write queue slot (S5 owns
-                   this slot until wq_tail is published below). */
-                memcpy(write_queue[tail].frame, slot->frame, HRES * VRES * 3);
-                write_queue[tail].time_stamp = s5_ts;
-                save_framecnt++;
-                write_queue[tail].tag = save_framecnt;
-                cnt2 = save_framecnt;
-
-                /* Publish slot to S7 */
-                atomic_store_explicit(&wq_tail, next, memory_order_release);
-
-                /* Release the output ring slot immediately for reuse by S2/S3 */
-                slot->is_ready_to_save = false;
-                slot->is_filter_applied = false;
-                ring_output_buffer.head_idx = (ring_output_buffer.head_idx + 1u) % ring_output_buffer.ring_size;
-                ring_output_buffer.count--;
-
-                sem_post(&semS7); /* wake S7 */
+                syslog(LOG_CRIT, "seq_frame_store: malloc failed, frame dropped");
             }
             else
             {
-                syslog(LOG_CRIT, "output ring buffer overflow, frame dropped");
+                memcpy(msg.data, slot->frame, HRES * VRES * 3);
+                clock_gettime(CLOCK_MONOTONIC, &msg.time_stamp);
+                save_framecnt++;
+                msg.tag = save_framecnt;
+
+                if (mq_timedsend(frame_mq, (const char *)&msg, sizeof(msg), 0, &ts_zero) == -1)
+                {
+                    free(msg.data);
+                    save_framecnt--;
+                    syslog(LOG_CRIT, "seq_frame_store: queue full, frame dropped");
+                }
+                else
+                {
+                    cnt2 = save_framecnt;
+                    slot->is_ready_to_save  = false;
+                    slot->is_filter_applied = false;
+                    ring_output_buffer.head_idx = (ring_output_buffer.head_idx + 1u) % ring_output_buffer.ring_size;
+                    ring_output_buffer.count--;
+                }
             }
         }
     }
@@ -1089,30 +1136,31 @@ int seq_frame_store(void)
     return cnt2;
 }
 
-/* S7 (non-RT): pop one frame from the write queue and write it to disk.
-   Called in a loop by Service_7_frame_write().
-   Returns the tag of the written frame, or 0 if the queue was empty (abort path). */
+/* S7 (non-RT): receive one frame from the mqueue and write it to disk.
+   Blocks on mq_receive until a message arrives.
+   Returns the frame tag on success, 0 on sentinel (shutdown signal). */
 int seq_frame_write(void)
 {
-    unsigned int head = atomic_load_explicit(&wq_head, memory_order_relaxed);
+    struct frame_msg msg;
+    unsigned int prio;
+    int rc;
 
-    if (head == atomic_load_explicit(&wq_tail, memory_order_acquire))
-        return 0; /* queue empty — woke on abort signal */
+    while ((rc = mq_receive(frame_mq, (char *)&msg, sizeof(msg), &prio)) == -1)
+    {
+        if (errno == EINTR) continue;
+        perror("mq_receive");
+        return 0;
+    }
 
-    double cap_time = (double)write_queue[head].time_stamp.tv_sec + (double)write_queue[head].time_stamp.tv_nsec / 1e9;
+    if (msg.data == NULL)
+        return 0; /* sentinel — exit */
 
-    syslog(LOG_CRIT, COURSE_FRM_CAPT_SYSLOG(COURSE, ASS), write_queue[head].tag, (cap_time - fstart));
-    /* Write to disk while still holding the slot (wq_head not yet advanced,
-       so S5 cannot overwrite this slot until we release it below). */
-    dump_ppm(write_queue[head].frame, HRES * VRES * 3,
-             write_queue[head].tag, &write_queue[head].time_stamp);
+    double store_time = (double)msg.time_stamp.tv_sec + (double)msg.time_stamp.tv_nsec / 1e9;
+    syslog(LOG_CRIT, COURSE_FRM_CAPT_SYSLOG(COURSE, ASS), msg.tag, (store_time - fstart));
+    dump_ppm(msg.data, HRES * VRES * 3, msg.tag, &msg.time_stamp);
+    free(msg.data);
 
-    unsigned int tag = write_queue[head].tag;
-
-    /* Release the slot back to the producer */
-    atomic_store_explicit(&wq_head, (head + 1) % WRITE_QUEUE_SIZE, memory_order_release);
-
-    return tag;
+    return (int)msg.tag;
 }
 
 int seq_frame_filter(void)
@@ -1593,6 +1641,7 @@ int v4l2_frame_acquisition_loop(char *dev_name)
 
 int v4l2_frame_acquisition_initialization(char *dev_name)
 {
+    seq_write_init();
     init_output_buf();
     // initialization of V4L2
     open_device(dev_name);
@@ -1612,6 +1661,7 @@ int v4l2_frame_acquisition_shutdown(void)
     enable_autofocus(); /* restore camera defaults before closing fd */
                         // enable_auto_exposure();
     close_device();
+    seq_write_cleanup();
     fprintf(stderr, "\n");
     return 0;
 }

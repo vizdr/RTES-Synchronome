@@ -86,8 +86,7 @@
 
 int abortTest = FALSE;
 atomic_int abortS1 = FALSE, abortS2 = FALSE, abortS3 = FALSE, abortS5 = FALSE;
-extern atomic_int abortS7; /* defined in capturelib.c */
-extern sem_t      semS7;   /* defined in capturelib.c */
+extern void seq_write_shutdown(void); /* defined in capturelib.c */
 sem_t semS1, semS2, semS3, semS5, semS6;
 
 #if VIEWER_ENABLE
@@ -136,7 +135,6 @@ int seq_frame_process(void);
 int seq_frame_store(void);
 int seq_frame_filter(void);
 int seq_frame_write(void);
-int seq_write_queue_count(void);
 
 double getTimeMsec(void);
 double realtime(struct timespec *tsptr);
@@ -335,11 +333,6 @@ void main(void)
         printf("Failed to initialize S6 semaphore\n");
         exit(-1);
     }
-    if (sem_init(&semS7, 0, 0))
-    {
-        printf("Failed to initialize S7 semaphore\n");
-        exit(-1);
-    }
     mainpid = getpid();
 
     rt_max_prio = sched_get_priority_max(SCHED_FIFO);
@@ -503,7 +496,7 @@ void main(void)
         printf("pthread_create successful for service 6\n");
 
     // Service_7 = SCHED_OTHER prio=0, non-RT file writer.
-    // Receives frames from S5 via the lock-free write queue and writes PPM files.
+    // Receives frames from S5 via POSIX mqueue and writes PPM files.
     // Runs on VIEWER_CORE to keep all blocking I/O off RT_CORE.
     pthread_t writer_thread;
     threadParams_t threadParams_writer;
@@ -575,6 +568,8 @@ void main(void)
         printf("joined viewer thread\n");
 #endif
 
+    seq_write_shutdown(); /* send sentinel — all RT threads done, no more mq_sends */
+
     if ((rc = pthread_join(writer_thread, NULL)) < 0)
         perror("main pthread_join for writer thread");
     else
@@ -607,7 +602,6 @@ void Sequencer(int id)
         abortS2 = TRUE;
         abortS3 = TRUE;
         abortS5 = TRUE;
-        abortS7 = TRUE;
 #if VIEWER_ENABLE
         abortS4 = TRUE;
 #endif
@@ -616,7 +610,6 @@ void Sequencer(int id)
         sem_post(&semS3);
         sem_post(&semS5);
         sem_post(&semS6);
-        sem_post(&semS7); /* wake S7 to drain write queue then exit */
 #if VIEWER_ENABLE
         sem_post(&semS4);
 #endif
@@ -1077,28 +1070,12 @@ void *Service_6_keyboard_reader(void *threadp)
 }
 
 /* Service_7 — non-RT file writer on VIEWER_CORE.
-   Sleeps on semS7; each post from S5 means one RGB frame is ready in
-   the lock-free write queue.  Drains the queue completely before
-   exiting so no frames are lost on shutdown. */
+   Blocks on mq_receive inside seq_frame_write(); exits when a sentinel
+   (data == NULL) is received after all RT service threads have finished. */
 void *Service_7_frame_write(void *threadp)
 {
     printf("\nFrame writer thread running on CPU=%d\n", sched_getcpu());
-
-    while (1)
-    {
-        sem_wait(&semS7);
-
-        /* On abort: finish writing everything still in the queue, then exit. */
-        if (abortS7 && seq_write_queue_count() == 0)
-            break;
-
-        seq_frame_write();
-
-        /* Second check: abort may have fired while seq_frame_write() was executing.
-           Without this, S7 loops to sem_wait with count=0 and blocks forever. */
-        if (abortS7 && seq_write_queue_count() == 0)
-            break;
-    }
-
+    while (seq_frame_write())
+        ;
     pthread_exit((void *)0);
 }
