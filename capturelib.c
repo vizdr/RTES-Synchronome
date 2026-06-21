@@ -1177,6 +1177,7 @@ int seq_frame_filter(int skip)
         filter_framecnt++;
         clock_gettime(CLOCK_MONOTONIC, &time_now);
         fnow = (double)time_now.tv_sec + (double)time_now.tv_nsec / 1000000000.0;
+        // syslog(LOG_CRIT, " filtered at %lf, @ %lf FPS", (fnow - fstart), (double)(filter_framecnt) / (fnow - fstart));
     }
 
     return filter_framecnt;

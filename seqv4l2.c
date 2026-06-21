@@ -765,7 +765,7 @@ void *Service_3_frame_filter(void *threadp)
         filter_cnt_prev = filter_cnt;
         filter_cnt = seq_frame_filter(skip_filter_requested > 0);
         if (skip_filter_requested > 0 && filter_cnt != filter_cnt_prev)
-            printf("S3: filter bypassed for frame %d\n", filter_cnt);
+            syslog(LOG_CRIT, "S3: filter bypassed for frame %d", filter_cnt);
 
         clock_gettime(MY_CLOCK_TYPE, &current_time_val);
         current_realtime = realtime(&current_time_val);
