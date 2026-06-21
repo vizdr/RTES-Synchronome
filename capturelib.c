@@ -1163,20 +1163,20 @@ int seq_frame_write(void)
     return (int)msg.tag;
 }
 
-int seq_frame_filter(void)
+/* skip=1: bypass apply_filter() but still mark slot as filter-applied so S5
+   can consume it and the output ring buffer does not back up. */
+int seq_frame_filter(int skip)
 {
-    // additional filtering or processing on the processed frames that are in the output ring buffer
-    if ((ring_output_buffer.save_out_frame[ring_output_buffer.head_idx].is_ready_to_save) && (!ring_output_buffer.save_out_frame[ring_output_buffer.head_idx].is_filter_applied))
+    struct save_out_frame_t *slot = &ring_output_buffer.save_out_frame[ring_output_buffer.head_idx];
+    if (slot->is_ready_to_save && !slot->is_filter_applied)
     {
-        // process the frame in the output ring buffer, which should already be in RGB format, so we can just save it to disk without any additional processing
-        apply_filter((void *)&(ring_output_buffer.save_out_frame[ring_output_buffer.head_idx].frame[0]), HRES * VRES * PIXEL_SIZE * 3);
-        ring_output_buffer.save_out_frame[ring_output_buffer.head_idx].is_filter_applied = true;
+        if (!skip)
+            apply_filter((void *)slot->frame, HRES * VRES * PIXEL_SIZE * 3);
 
-        // syslog(LOG_CRIT, "Applied filter at %d frame from output ring buffer.", save_framecnt);
+        slot->is_filter_applied = true;
         filter_framecnt++;
         clock_gettime(CLOCK_MONOTONIC, &time_now);
         fnow = (double)time_now.tv_sec + (double)time_now.tv_nsec / 1000000000.0;
-        // syslog(LOG_CRIT, " filtered at %lf, @ %lf FPS", (fnow - fstart), (double)(filter_framecnt) / (fnow - fstart));
     }
 
     return filter_framecnt;

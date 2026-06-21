@@ -133,7 +133,7 @@ int seq_frame_get_for_display(unsigned char *curr_rgb,
 int seq_frame_read(void);
 int seq_frame_process(void);
 int seq_frame_store(void);
-int seq_frame_filter(void);
+int seq_frame_filter(int skip);
 int seq_frame_write(void);
 
 double getTimeMsec(void);
@@ -760,21 +760,12 @@ void *Service_3_frame_filter(void *threadp)
             break;
         S3Cnt++;
 
-        // DO WORK - apply filter to frame
-        // filter_cnt = seq_frame_filter();
-        if (skip_filter_requested > 0)
-        {
-            printf("S3: skipping filter work due to user input\n");
-        }
-        else
-        {
-            filter_cnt_prev = filter_cnt;
-            filter_cnt = seq_frame_filter();
-            if (filter_cnt_prev == filter_cnt)
-            {
-                // syslog(LOG_CRIT, "S3: filter was not applied for release %llu, filter count %d", S5Cnt, filter_cnt);
-            }
-        }
+        // DO WORK - apply filter to frame (skip=1 bypasses apply_filter but still
+        // marks the slot as filter-applied so S5 can consume it without stalling)
+        filter_cnt_prev = filter_cnt;
+        filter_cnt = seq_frame_filter(skip_filter_requested > 0);
+        if (skip_filter_requested > 0 && filter_cnt != filter_cnt_prev)
+            printf("S3: filter bypassed for frame %d\n", filter_cnt);
 
         clock_gettime(MY_CLOCK_TYPE, &current_time_val);
         current_realtime = realtime(&current_time_val);
