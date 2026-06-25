@@ -10,6 +10,10 @@ University of Colorado Boulder — Real Time Embedded Systems — Synchronome Pr
   <img src="RTES-Wallclock.png" width="900">
 </p>
 
+<p align="center">
+  <img src="Frame3-Demo-1-Hz.png" width="900">
+</p>
+
 ---
 
 ## Overview
